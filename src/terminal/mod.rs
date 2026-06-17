@@ -62,6 +62,7 @@ pub struct TerminalModel {
     pub selection_anchor: Option<(usize, usize)>,
     pub selection_head: Option<(usize, usize)>,
     pub selection_dragging: bool,
+    pub cursor_blink_visible: bool,
 }
 
 impl TerminalModel {
@@ -164,9 +165,25 @@ impl TerminalModel {
                     .update(cx, |model, cx| {
                         model.terminal.vt_write(&buf);
                         model.new_output = true;
+                        model.cursor_blink_visible = true;
                         cx.notify();
                     })
                     .ok();
+            }
+        })
+        .detach();
+
+        // Blink timer: toggle blink state every 500ms
+        cx.spawn(async move |entity, cx| loop {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(500))
+                .await;
+            let res = entity.update(cx, |model, cx| {
+                model.cursor_blink_visible = !model.cursor_blink_visible;
+                cx.notify();
+            });
+            if res.is_err() {
+                break;
             }
         })
         .detach();
@@ -193,6 +210,7 @@ impl TerminalModel {
             selection_anchor: None,
             selection_head: None,
             selection_dragging: false,
+            cursor_blink_visible: true,
         }
     }
 
@@ -205,7 +223,7 @@ impl TerminalModel {
     ///
     /// Uses split borrows so render_state, row_iter, cell_iter, and terminal
     /// can be accessed on a single `&mut self` without borrow conflicts.
-    pub fn collect_rows(&mut self) -> (Vec<Vec<(char, u32, u32)>>, Option<(usize, usize)>, u32) {
+    pub fn collect_rows(&mut self, is_focused: bool) -> (Vec<Vec<(char, u32, u32)>>, Option<(usize, usize)>, u32) {
         // Scroll to bottom when new content arrives.
         if self.new_output {
             let _ = self.terminal.scroll_viewport(ScrollViewport::Bottom);
@@ -255,20 +273,42 @@ impl TerminalModel {
                 };
 
                 let (fg, bg) = if cursor == Some((col_idx, row_idx)) {
-                    // Render cursor as inverse of cell colors.
-                    let fg = cell
-                        .fg_color()
-                        .ok()
-                        .flatten()
-                        .map(rgb32)
-                        .unwrap_or(default_fg);
-                    let bg = cell
-                        .bg_color()
-                        .ok()
-                        .flatten()
-                        .map(rgb32)
-                        .unwrap_or(default_bg);
-                    (bg, fg) // swap for cursor
+                    let show_cursor_here = if is_focused {
+                        self.cursor_blink_visible
+                    } else {
+                        true // Solid/static cursor when unfocused
+                    };
+
+                    if show_cursor_here {
+                        // Render cursor as inverse of cell colors.
+                        let fg = cell
+                            .fg_color()
+                            .ok()
+                            .flatten()
+                            .map(rgb32)
+                            .unwrap_or(default_fg);
+                        let bg = cell
+                            .bg_color()
+                            .ok()
+                            .flatten()
+                            .map(rgb32)
+                            .unwrap_or(default_bg);
+                        (bg, fg) // swap for cursor
+                    } else {
+                        let fg = cell
+                            .fg_color()
+                            .ok()
+                            .flatten()
+                            .map(rgb32)
+                            .unwrap_or(default_fg);
+                        let bg = cell
+                            .bg_color()
+                            .ok()
+                            .flatten()
+                            .map(rgb32)
+                            .unwrap_or(default_bg);
+                        (fg, bg)
+                    }
                 } else {
                     let fg = cell
                         .fg_color()
@@ -301,6 +341,7 @@ impl TerminalModel {
     /// respects terminal modes (application cursor keys, Kitty keyboard
     /// protocol, etc.).  Returns the bytes to write to the PTY.
     pub fn encode_keystroke(&mut self, k: &Keystroke) -> Vec<u8> {
+        self.cursor_blink_visible = true;
         let ghost_key = gpui_key_to_ghostty(k.key.as_str());
         let mods = gpui_mods_to_ghostty(&k.modifiers);
 

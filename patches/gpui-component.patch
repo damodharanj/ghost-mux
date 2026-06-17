@@ -225,7 +225,7 @@ index a8131ebb..801a5e7b 100644
          }
  
 diff --git a/crates/ui/src/input/state.rs b/crates/ui/src/input/state.rs
-index db2f796f..72a49e95 100644
+index db2f796f..c2b359b7 100644
 --- a/crates/ui/src/input/state.rs
 +++ b/crates/ui/src/input/state.rs
 @@ -368,6 +368,7 @@ pub struct InputState {
@@ -302,6 +302,24 @@ index db2f796f..72a49e95 100644
      /// Insert text at the current cursor position.
      ///
      /// And the cursor will be moved to the end of inserted text.
+@@ -831,8 +877,7 @@ impl InputState {
+     /// Set with disabled mode.
+     ///
+     /// See also: [`Self::set_disabled`], [`Self::is_disabled`].
+-    #[allow(unused)]
+-    pub(crate) fn disabled(mut self, disabled: bool) -> Self {
++    pub fn disabled(mut self, disabled: bool) -> Self {
+         self.disabled = disabled;
+         self
+     }
+@@ -1435,6 +1480,7 @@ impl InputState {
+         window: &mut Window,
+         cx: &mut Context<Self>,
+     ) {
++        self.focus(window, cx);
+         // Clear inline completion on any mouse interaction
+         self.clear_inline_completion(cx);
+ 
 diff --git a/crates/ui/src/resizable/mod.rs b/crates/ui/src/resizable/mod.rs
 index ed74d32c..9483c4d3 100644
 --- a/crates/ui/src/resizable/mod.rs
@@ -343,3 +361,40 @@ index ed74d32c..9483c4d3 100644
      /// Programmatically resize the panel at `ix` to `size`, redistributing
      /// space among siblings using the same logic as a drag.
      ///
+diff --git a/crates/ui/src/resizable/panel.rs b/crates/ui/src/resizable/panel.rs
+index 7b521645..d67737b0 100644
+--- a/crates/ui/src/resizable/panel.rs
++++ b/crates/ui/src/resizable/panel.rs
+@@ -438,9 +438,9 @@ impl Element for ResizePanelGroupElement {
+         // When any mouse up, stop dragging
+         window.on_mouse_event({
+             let state = self.state.clone();
+-            let current_ix = state.read(cx).resizing_panel_ix;
+             let on_resize = self.on_resize.clone();
+             move |_: &MouseUpEvent, phase, window, cx| {
++                let current_ix = state.read(cx).resizing_panel_ix;
+                 if current_ix.is_none() {
+                     return;
+                 }
+diff --git a/crates/ui/src/resizable/resize_handle.rs b/crates/ui/src/resizable/resize_handle.rs
+index cfac3108..82dd41b7 100644
+--- a/crates/ui/src/resizable/resize_handle.rs
++++ b/crates/ui/src/resizable/resize_handle.rs
+@@ -108,7 +108,7 @@ impl<T: 'static, E: 'static + Render> Element for ResizeHandle<T, E> {
+             let bg_color = if state.is_active() {
+                 cx.theme().drag_border
+             } else {
+-                cx.theme().border
++                gpui::transparent_black()
+             };
+ 
+             let mut el = div()
+@@ -155,7 +155,7 @@ impl<T: 'static, E: 'static + Render> Element for ResizeHandle<T, E> {
+                 .child(
+                     div()
+                         .bg(bg_color)
+-                        .group_hover("handle", |this| this.bg(bg_color))
++                        .group_hover("handle", |this| this.bg(cx.theme().drag_border))
+                         .when(axis.is_horizontal(), |this| this.h_full().w(HANDLE_SIZE))
+                         .when(axis.is_vertical(), |this| this.w_full().h(HANDLE_SIZE)),
+                 )

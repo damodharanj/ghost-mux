@@ -1,4 +1,5 @@
 use gpui::*;
+use gpui::prelude::FluentBuilder;
 use gpui::{InteractiveElement, ParentElement, Styled, StatefulInteractiveElement};
 use gpui_component::{
     input::{Input, InputState},
@@ -189,10 +190,14 @@ pub struct DashboardView {
     pub git_diffs: HashMap<usize, GitDiffState>,
     pub git_tree_view: HashMap<usize, bool>,
     pub git_diff_side_by_side: HashMap<usize, bool>,
+    pub git_diff_wrap: HashMap<usize, bool>,
     pub git_collapsed_paths: HashMap<usize, std::collections::HashSet<PathBuf>>,
+    pub git_diff_scroll_handles: std::cell::RefCell<HashMap<usize, UniformListScrollHandle>>,
+    pub git_diff_div_scroll_handles: std::cell::RefCell<HashMap<usize, gpui::ScrollHandle>>,
     pub next_id: usize,
     pub modal_editor: Option<ModalEditorState>,
     pub editor_panels: std::collections::HashSet<usize>,
+    pub panel_focus_handles: HashMap<usize, FocusHandle>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -238,10 +243,14 @@ impl DashboardView {
             git_diffs: HashMap::new(),
             git_tree_view: HashMap::new(),
             git_diff_side_by_side: HashMap::new(),
+            git_diff_wrap: HashMap::new(),
             git_collapsed_paths: HashMap::new(),
+            git_diff_scroll_handles: std::cell::RefCell::new(HashMap::new()),
+            git_diff_div_scroll_handles: std::cell::RefCell::new(HashMap::new()),
             next_id: 0,
             modal_editor: None,
             editor_panels: std::collections::HashSet::new(),
+            panel_focus_handles: HashMap::new(),
         };
 
         // Try to restore previously-saved layout. Fall back to a fresh dashboard.
@@ -1082,6 +1091,7 @@ impl DashboardView {
                 self.terminals.remove(&tab.id);
                 self.editors.remove(&tab.id);
             }
+            self.panel_focus_handles.remove(&panel_id);
             self.persist(cx);
             cx.notify();
         }
@@ -1179,7 +1189,7 @@ impl DashboardView {
     }
 
 
-    fn render_panel(&self, dashboard_id: usize, panel_id: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_panel(&mut self, dashboard_id: usize, panel_id: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let Some(dashboard) = self.dashboards.get(&dashboard_id) else {
             return div().size_full().bg(theme.background).into_any_element();
@@ -1193,15 +1203,36 @@ impl DashboardView {
         };
 
         let is_editor_on = self.editor_panels.contains(&panel_id);
+
+        let focus_handle = self
+            .panel_focus_handles
+            .entry(panel_id)
+            .or_insert_with(|| cx.focus_handle())
+            .clone();
+
+        let is_focused = focus_handle.contains_focused(window, cx);
+        let border_color = if is_focused {
+            theme.accent
+        } else {
+            theme.border
+        };
+
+        let fh_click = focus_handle.clone();
+
         div()
+            .id(ElementId::Integer(1_000_000 + panel_id as u64))
             .size_full()
             .flex()
             .flex_col()
             .bg(theme.background)
             .border_1()
-            .border_color(theme.border)
+            .border_color(border_color)
             .rounded_sm()
             .overflow_hidden()
+            .track_focus(&focus_handle)
+            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                window.focus(&fh_click, cx);
+            })
             .child(panel_header(
                 dashboard_id,
                 panel_id,
@@ -1224,7 +1255,10 @@ impl DashboardView {
                 &self.git_diffs,
                 &self.git_tree_view,
                 &self.git_diff_side_by_side,
+                &self.git_diff_wrap,
                 &self.git_collapsed_paths,
+                &self.git_diff_scroll_handles,
+                &self.git_diff_div_scroll_handles,
                 &self.settings.terminal,
                 &self.settings.layout,
                 window,
@@ -2905,7 +2939,10 @@ fn render_panel_content(
     git_diffs: &HashMap<usize, GitDiffState>,
     git_tree_view: &HashMap<usize, bool>,
     git_diff_side_by_side: &HashMap<usize, bool>,
+    git_diff_wrap: &HashMap<usize, bool>,
     git_collapsed_paths: &HashMap<usize, std::collections::HashSet<PathBuf>>,
+    git_diff_scroll_handles: &std::cell::RefCell<HashMap<usize, UniformListScrollHandle>>,
+    git_diff_div_scroll_handles: &std::cell::RefCell<HashMap<usize, gpui::ScrollHandle>>,
     terminal_settings: &TerminalSettings,
     layout_settings: &LayoutSettings,
     window: &mut Window,
@@ -2950,7 +2987,7 @@ fn render_panel_content(
         }
         PanelContent::Editor { path, is_diff, status } => {
             if let Some(editor) = editors.get(&id) {
-                render_panel_editor(id, &path, editor, is_diff, status.as_deref(), git_diff_side_by_side, layout_settings, window, cx)
+                render_panel_editor(id, &path, editor, is_diff, status.as_deref(), git_diff_side_by_side, git_diff_wrap, git_diff_scroll_handles, git_diff_div_scroll_handles, layout_settings, window, cx)
             } else {
                 div().flex_1().child("No editor").into_any_element()
             }
@@ -3474,10 +3511,11 @@ fn render_terminal(
     _window: &mut Window,
     cx: &mut Context<DashboardView>,
 ) -> AnyElement {
-    let (row_data, _cursor, term_bg) = term.update(cx, |m, _| m.collect_rows());
+    let focus_handle = term.read(cx).focus_handle.clone();
+    let is_focused = focus_handle.contains_focused(_window, cx);
+    let (row_data, _cursor, term_bg) = term.update(cx, |m, _| m.collect_rows(is_focused));
 
     let model = term.read(cx);
-    let focus_handle = model.focus_handle.clone();
     let scroll_handle = model.scroll_handle.clone();
     let selection = model.selection_range();
 
@@ -3785,6 +3823,9 @@ fn render_modal_editor(
         .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
             this.close_modal_editor(cx);
         }))
+        .on_scroll_wheel(|_, _, cx| {
+            cx.stop_propagation();
+        })
         .child(
             // The Modal Dialog Box
             div()
@@ -3952,6 +3993,7 @@ fn render_modal_editor(
                                                 999_500,
                                                 sbs_lines[i].clone(),
                                                 theme,
+                                                false,
                                             )
                                         })
                                         .collect::<Vec<AnyElement>>()
@@ -3976,6 +4018,7 @@ fn render_modal_editor(
                                                 999_500,
                                                 inline_lines[i].clone(),
                                                 theme,
+                                                false,
                                             )
                                         })
                                         .collect::<Vec<AnyElement>>()
@@ -4151,6 +4194,7 @@ fn render_side_by_side_line(
     base_id: u64,
     sline: SideBySideLine,
     theme: &gpui_component::theme::Theme,
+    wrap: bool,
 ) -> AnyElement {
     if sline.left_class == DiffLineClass::Header {
         let line_text = sline.left_text;
@@ -4173,12 +4217,15 @@ fn render_side_by_side_line(
             .bg(bg_color)
             .px_3()
             .flex()
-            .items_center()
+            .when(wrap, |this| this.items_start())
+            .when(!wrap, |this| this.items_center())
             .child(
                 div()
                     .font_family(theme.mono_font_family.clone())
                     .text_size(theme.mono_font_size)
                     .text_color(text_color)
+                    .when(wrap, |this| this.whitespace_normal())
+                    .when(!wrap, |this| this.whitespace_nowrap())
                     .child(line_text)
             )
             .into_any_element()
@@ -4224,7 +4271,8 @@ fn render_side_by_side_line(
                     .px_3()
                     .flex()
                     .flex_row()
-                    .items_center()
+                    .when(wrap, |this| this.items_start())
+                    .when(!wrap, |this| this.items_center())
                     .child(
                         div()
                             .w(px(32.))
@@ -4242,6 +4290,8 @@ fn render_side_by_side_line(
                             .font_family(theme.mono_font_family.clone())
                             .text_size(theme.mono_font_size)
                             .text_color(left_text_color)
+                            .when(wrap, |this| this.whitespace_normal())
+                            .when(!wrap, |this| this.whitespace_nowrap())
                             .child(sline.left_text)
                     )
             )
@@ -4257,7 +4307,8 @@ fn render_side_by_side_line(
                     .px_3()
                     .flex()
                     .flex_row()
-                    .items_center()
+                    .when(wrap, |this| this.items_start())
+                    .when(!wrap, |this| this.items_center())
                     .child(
                         div()
                             .w(px(32.))
@@ -4275,6 +4326,8 @@ fn render_side_by_side_line(
                             .font_family(theme.mono_font_family.clone())
                             .text_size(theme.mono_font_size)
                             .text_color(right_text_color)
+                            .when(wrap, |this| this.whitespace_normal())
+                            .when(!wrap, |this| this.whitespace_nowrap())
                             .child(sline.right_text)
                     )
             )
@@ -4287,6 +4340,7 @@ fn render_inline_diff_line(
     base_id: u64,
     line: String,
     theme: &gpui_component::theme::Theme,
+    wrap: bool,
 ) -> AnyElement {
     let text_color: Hsla;
     let bg_color: Hsla;
@@ -4314,12 +4368,15 @@ fn render_inline_diff_line(
         .bg(bg_color)
         .px_3()
         .flex()
-        .items_center()
+        .when(wrap, |this| this.items_start())
+        .when(!wrap, |this| this.items_center())
         .child(
             div()
                 .font_family(theme.mono_font_family.clone())
                 .text_size(theme.mono_font_size)
                 .text_color(text_color)
+                .when(wrap, |this| this.whitespace_normal())
+                .when(!wrap, |this| this.whitespace_nowrap())
                 .child(line)
         )
         .into_any_element()
@@ -4332,6 +4389,9 @@ fn render_panel_editor(
     is_diff: bool,
     _status: Option<&str>,
     git_diff_side_by_side: &HashMap<usize, bool>,
+    git_diff_wrap: &HashMap<usize, bool>,
+    git_diff_scroll_handles: &std::cell::RefCell<HashMap<usize, UniformListScrollHandle>>,
+    git_diff_div_scroll_handles: &std::cell::RefCell<HashMap<usize, gpui::ScrollHandle>>,
     layout_settings: &LayoutSettings,
     _window: &mut Window,
     cx: &mut Context<DashboardView>,
@@ -4382,6 +4442,7 @@ fn render_panel_editor(
         );
     } else {
         let side_by_side = git_diff_side_by_side.get(&tab_id).cloned().unwrap_or(false);
+        let wrap = git_diff_wrap.get(&tab_id).cloned().unwrap_or(false);
         
         toolbar = toolbar.child(
             div()
@@ -4412,62 +4473,153 @@ fn render_panel_editor(
                         })
                     )
                 )
+                .child(
+                    div()
+                        .w(px(1.))
+                        .h(px(14.))
+                        .bg(theme.border)
+                )
+                .child(
+                    sidebar_text_button(
+                        ElementId::Integer(999_103 + tab_id as u64),
+                        "Wrap Text",
+                        wrap,
+                        theme,
+                        cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                            let current = this.git_diff_wrap.get(&tab_id).cloned().unwrap_or(false);
+                            this.git_diff_wrap.insert(tab_id, !current);
+                            cx.notify();
+                        })
+                    )
+                )
         );
     }
 
     let body = if is_diff {
         let content = editor.read(cx).text().to_string();
         let side_by_side = git_diff_side_by_side.get(&tab_id).cloned().unwrap_or(false);
-        let scroll_handle = UniformListScrollHandle::new();
+        let wrap = git_diff_wrap.get(&tab_id).cloned().unwrap_or(false);
 
         let list_element = if side_by_side {
             let sbs_lines = parse_side_by_side_diff(&content);
-            let item_count = sbs_lines.len();
             let sbs_lines = Arc::new(sbs_lines);
 
-            uniform_list(
-                ElementId::Integer(999_600 + tab_id as u64),
-                item_count,
-                move |range, _window, cx| {
-                    let theme = cx.theme();
-                    range
-                        .map(|i| {
-                            render_side_by_side_line(
-                                i,
-                                999_700 + tab_id as u64,
-                                sbs_lines[i].clone(),
-                                theme,
-                            )
-                        })
-                        .collect::<Vec<AnyElement>>()
-                },
-            )
-            .size_full()
-            .track_scroll(&scroll_handle)
+            if wrap {
+                let div_scroll_handle = git_diff_div_scroll_handles
+                    .borrow_mut()
+                    .entry(tab_id)
+                    .or_insert_with(gpui::ScrollHandle::new)
+                    .clone();
+
+                div()
+                    .id(ElementId::Integer(999_800 + tab_id as u64))
+                    .size_full()
+                    .overflow_y_scroll()
+                    .track_scroll(&div_scroll_handle)
+                    .child(
+                        div()
+                            .v_flex()
+                            .children(sbs_lines.iter().enumerate().map(|(i, sline)| {
+                                render_side_by_side_line(
+                                    i,
+                                    999_700 + tab_id as u64,
+                                    sline.clone(),
+                                    theme,
+                                    wrap,
+                                )
+                            }))
+                    )
+                    .into_any_element()
+            } else {
+                let scroll_handle = git_diff_scroll_handles
+                    .borrow_mut()
+                    .entry(tab_id)
+                    .or_insert_with(UniformListScrollHandle::new)
+                    .clone();
+                let item_count = sbs_lines.len();
+
+                uniform_list(
+                    ElementId::Integer(999_600 + tab_id as u64),
+                    item_count,
+                    move |range, _window, cx| {
+                        let theme = cx.theme();
+                        range
+                            .map(|i| {
+                                render_side_by_side_line(
+                                    i,
+                                    999_700 + tab_id as u64,
+                                    sbs_lines[i].clone(),
+                                    theme,
+                                    wrap,
+                                )
+                            })
+                            .collect::<Vec<AnyElement>>()
+                    },
+                )
+                .size_full()
+                .track_scroll(&scroll_handle)
+                .into_any_element()
+            }
         } else {
             let inline_lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
-            let item_count = inline_lines.len();
             let inline_lines = Arc::new(inline_lines);
 
-            uniform_list(
-                ElementId::Integer(999_600 + tab_id as u64),
-                item_count,
-                move |range, _window, cx| {
-                    let theme = cx.theme();
-                    range
-                        .map(|i| {
-                            render_inline_diff_line(
-                                i,
-                                999_700 + tab_id as u64,
-                                inline_lines[i].clone(),
-                                theme,
-                            )
-                        })
-                        .collect::<Vec<AnyElement>>()
-                },
-            )
-            .size_full()
-            .track_scroll(&scroll_handle)
+            if wrap {
+                let div_scroll_handle = git_diff_div_scroll_handles
+                    .borrow_mut()
+                    .entry(tab_id)
+                    .or_insert_with(gpui::ScrollHandle::new)
+                    .clone();
+
+                div()
+                    .id(ElementId::Integer(999_900 + tab_id as u64))
+                    .size_full()
+                    .overflow_y_scroll()
+                    .track_scroll(&div_scroll_handle)
+                    .child(
+                        div()
+                            .v_flex()
+                            .children(inline_lines.iter().enumerate().map(|(i, line)| {
+                                render_inline_diff_line(
+                                    i,
+                                    999_700 + tab_id as u64,
+                                    line.clone(),
+                                    theme,
+                                    wrap,
+                                )
+                            }))
+                    )
+                    .into_any_element()
+            } else {
+                let scroll_handle = git_diff_scroll_handles
+                    .borrow_mut()
+                    .entry(tab_id)
+                    .or_insert_with(UniformListScrollHandle::new)
+                    .clone();
+                let item_count = inline_lines.len();
+
+                uniform_list(
+                    ElementId::Integer(999_600 + tab_id as u64),
+                    item_count,
+                    move |range, _window, cx| {
+                        let theme = cx.theme();
+                        range
+                            .map(|i| {
+                                render_inline_diff_line(
+                                    i,
+                                    999_700 + tab_id as u64,
+                                    inline_lines[i].clone(),
+                                    theme,
+                                    wrap,
+                                )
+                            })
+                            .collect::<Vec<AnyElement>>()
+                    },
+                )
+                .size_full()
+                .track_scroll(&scroll_handle)
+                .into_any_element()
+            }
         };
 
         div()
