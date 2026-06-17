@@ -198,6 +198,7 @@ pub struct DashboardView {
     pub modal_editor: Option<ModalEditorState>,
     pub editor_panels: std::collections::HashSet<usize>,
     pub panel_focus_handles: HashMap<usize, FocusHandle>,
+    pub open_menu: Option<(usize, usize)>, // (panel_id, tab_idx)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -251,6 +252,7 @@ impl DashboardView {
             modal_editor: None,
             editor_panels: std::collections::HashSet::new(),
             panel_focus_handles: HashMap::new(),
+            open_menu: None,
         };
 
         // Try to restore previously-saved layout. Fall back to a fresh dashboard.
@@ -396,7 +398,11 @@ impl DashboardView {
                         self.ensure_content_entity(t.id, content.clone(), Some(current_dir.clone()), window, cx);
                         PanelTab {
                             id: t.id,
-                            title: t.title,
+                            title: if t.title.starts_with("Tab ") {
+                                content_title(&content)
+                            } else {
+                                t.title
+                            },
                             content,
                         }
                     })
@@ -456,7 +462,7 @@ impl DashboardView {
             PanelTabs {
                 tabs: vec![PanelTab {
                     id: tab_id,
-                    title: "Tab 1".to_string(),
+                    title: "terminal".to_string(),
                     content: PanelContent::Terminal,
                 }],
                 active_tab: 0,
@@ -491,6 +497,7 @@ impl DashboardView {
     }
 
     pub fn switch_dashboard(&mut self, dashboard_id: usize, cx: &mut Context<Self>) {
+        self.open_menu = None;
         if dashboard_id != self.active_dashboard_id && self.dashboards.contains_key(&dashboard_id) {
             self.active_dashboard_id = dashboard_id;
             self.persist(cx);
@@ -529,16 +536,19 @@ impl DashboardView {
     }
 
     fn toggle_settings_panel(&mut self, cx: &mut Context<Self>) {
+        self.open_menu = None;
         self.show_settings_panel = !self.show_settings_panel;
         cx.notify();
     }
 
     fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
+        self.open_menu = None;
         self.show_sidebar = !self.show_sidebar;
         cx.notify();
     }
 
     fn toggle_memory_stats(&mut self, cx: &mut Context<Self>) {
+        self.open_menu = None;
         self.show_memory_stats = !self.show_memory_stats;
         cx.notify();
     }
@@ -913,9 +923,10 @@ impl DashboardView {
         let cwd = self.dashboards.get(&dashboard_id).map(|d| d.current_dir.clone());
         self.ensure_content_entity(tab_id, content.clone(), cwd, window, cx);
 
+        self.open_menu = None;
         if let Some(dashboard) = self.dashboards.get_mut(&dashboard_id) {
             if let Some(panel) = dashboard.panel_tabs.get_mut(&panel_id) {
-                let title = format!("Tab {}", panel.tabs.len() + 1);
+                let title = content_title(&content);
                 panel.tabs.push(PanelTab {
                     id: tab_id,
                     title,
@@ -935,6 +946,7 @@ impl DashboardView {
         tab_idx: usize,
         cx: &mut Context<Self>,
     ) {
+        self.open_menu = None;
         let removed_tab_id = if let Some(dashboard) = self.dashboards.get_mut(&dashboard_id) {
             if let Some(panel) = dashboard.panel_tabs.get_mut(&panel_id) {
                 if panel.tabs.len() <= 1 || tab_idx >= panel.tabs.len() {
@@ -957,6 +969,13 @@ impl DashboardView {
         if let Some(tab_id) = removed_tab_id {
             self.terminals.remove(&tab_id);
             self.editors.remove(&tab_id);
+            self.terminal_cwds.remove(&tab_id);
+            self.expanded_paths.remove(&tab_id);
+            self.git_diffs.remove(&tab_id);
+            self.git_tree_view.remove(&tab_id);
+            self.git_diff_side_by_side.remove(&tab_id);
+            self.git_diff_wrap.remove(&tab_id);
+            self.git_collapsed_paths.remove(&tab_id);
             self.persist(cx);
             cx.notify();
         }
@@ -969,6 +988,7 @@ impl DashboardView {
         tab_idx: usize,
         cx: &mut Context<Self>,
     ) {
+        self.open_menu = None;
         if let Some(dashboard) = self.dashboards.get_mut(&dashboard_id) {
             if let Some(panel) = dashboard.panel_tabs.get_mut(&panel_id) {
                 if tab_idx < panel.tabs.len() && tab_idx != panel.active_tab {
@@ -988,6 +1008,7 @@ impl DashboardView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.open_menu = None;
         let tab_id = if let Some(dashboard) = self.dashboards.get_mut(&dashboard_id) {
             if let Some(panel) = dashboard.panel_tabs.get_mut(&panel_id) {
                 if let Some(active_tab) = panel.tabs.get_mut(panel.active_tab) {
@@ -995,6 +1016,7 @@ impl DashboardView {
                         return;
                     }
                     active_tab.content = content.clone();
+                    active_tab.title = content_title(&content);
                     active_tab.id
                 } else {
                     return;
@@ -1009,6 +1031,15 @@ impl DashboardView {
         let cwd = self.dashboards.get(&dashboard_id).map(|d| d.current_dir.clone());
         self.ensure_content_entity(tab_id, content, cwd, window, cx);
         self.persist(cx);
+        cx.notify();
+    }
+
+    pub fn toggle_tab_menu(&mut self, panel_id: usize, tab_idx: usize, cx: &mut Context<Self>) {
+        if self.open_menu == Some((panel_id, tab_idx)) {
+            self.open_menu = None;
+        } else {
+            self.open_menu = Some((panel_id, tab_idx));
+        }
         cx.notify();
     }
 
@@ -1045,7 +1076,7 @@ impl DashboardView {
                 PanelTabs {
                     tabs: vec![PanelTab {
                         id: new_tab,
-                        title: "Tab 1".to_string(),
+                        title: content_title(&content),
                         content,
                     }],
                     active_tab: 0,
@@ -1219,11 +1250,29 @@ impl DashboardView {
 
         let fh_click = focus_handle.clone();
 
+        let click_catcher = if self.open_menu.is_some() {
+            Some(
+                div()
+                    .id(ElementId::Integer(2_900_000 + panel_id as u64))
+                    .absolute()
+                    .top(px(self.settings.layout.panel_header_height))
+                    .left_0()
+                    .size_full()
+                    .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+                        this.open_menu = None;
+                        cx.notify();
+                    }))
+            )
+        } else {
+            None
+        };
+
+        let header_height = self.settings.layout.panel_header_height;
+
         div()
             .id(ElementId::Integer(1_000_000 + panel_id as u64))
             .size_full()
-            .flex()
-            .flex_col()
+            .relative()
             .bg(theme.background)
             .border_1()
             .border_color(border_color)
@@ -1233,37 +1282,54 @@ impl DashboardView {
             .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                 window.focus(&fh_click, cx);
             })
-            .child(panel_header(
-                dashboard_id,
-                panel_id,
-                panel_tabs,
-                can_close,
-                is_editor_on,
-                &self.settings.layout,
-                cx,
-            ))
-            .child(render_panel_content(
-                active_tab.id,
-                active_tab.content.clone(),
-                dashboard_id,
-                panel_id,
-                dashboard.current_dir.clone(),
-                &self.terminals,
-                &self.editors,
-                &self.terminal_cwds,
-                &self.expanded_paths,
-                &self.git_diffs,
-                &self.git_tree_view,
-                &self.git_diff_side_by_side,
-                &self.git_diff_wrap,
-                &self.git_collapsed_paths,
-                &self.git_diff_scroll_handles,
-                &self.git_diff_div_scroll_handles,
-                &self.settings.terminal,
-                &self.settings.layout,
-                window,
-                cx,
-            ))
+            .child(
+                div()
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .child(div().h(px(header_height)).w_full())
+                    .child(render_panel_content(
+                        active_tab.id,
+                        active_tab.content.clone(),
+                        dashboard_id,
+                        panel_id,
+                        dashboard.current_dir.clone(),
+                        &self.terminals,
+                        &self.editors,
+                        &self.terminal_cwds,
+                        &self.expanded_paths,
+                        &self.git_diffs,
+                        &self.git_tree_view,
+                        &self.git_diff_side_by_side,
+                        &self.git_diff_wrap,
+                        &self.git_collapsed_paths,
+                        &self.git_diff_scroll_handles,
+                        &self.git_diff_div_scroll_handles,
+                        &self.settings.terminal,
+                        &self.settings.layout,
+                        window,
+                        cx,
+                    ))
+            )
+            .children(click_catcher)
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .w_full()
+                    .h(px(header_height))
+                    .child(panel_header(
+                        dashboard_id,
+                        panel_id,
+                        panel_tabs,
+                        can_close,
+                        is_editor_on,
+                        &self.settings.layout,
+                        self.open_menu,
+                        cx,
+                    ))
+            )
             .into_any_element()
     }
 
@@ -2409,39 +2475,82 @@ fn panel_header(
     can_close: bool,
     is_editor_on: bool,
     settings: &LayoutSettings,
+    open_menu: Option<(usize, usize)>,
     cx: &mut Context<DashboardView>,
 ) -> AnyElement {
     let theme = cx.theme();
-    let active_content = panel_tabs
-        .tabs
-        .get(panel_tabs.active_tab)
-        .map(|t| t.content.clone())
-        .unwrap_or(PanelContent::Terminal);
 
     let tab_buttons: Vec<AnyElement> = panel_tabs
         .tabs
         .iter()
         .enumerate()
         .map(|(idx, tab)| {
-            let tab_select = tab_button(
-                ElementId::Integer(2_000_000 + tab.id as u64),
-                tab.title.clone(),
-                idx == panel_tabs.active_tab,
-                settings,
-                theme,
-                cx.listener(move |this, _: &ClickEvent, _window, cx| {
+            let is_active = idx == panel_tabs.active_tab;
+            let display_title = match &tab.content {
+                PanelContent::Terminal => "terminal".to_string(),
+                PanelContent::FileExplorer => "explorer".to_string(),
+                PanelContent::Git => "git".to_string(),
+                PanelContent::Editor { path, is_diff, .. } => {
+                    let name = path.file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "editor".to_string());
+                    if *is_diff {
+                        format!("diff: {name}")
+                    } else {
+                        name
+                    }
+                }
+            };
+
+            let is_menu_open = open_menu == Some((panel_id, idx));
+
+            let tab_select = div()
+                .id(ElementId::Integer(2_000_000 + tab.id as u64))
+                .flex_1()
+                .h_full()
+                .flex()
+                .items_center()
+                .px_2()
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
                     this.switch_panel_tab(dashboard_id, panel_id, idx, cx);
-                }),
-            );
+                }))
+                .child(display_title.clone());
+
+            let menu_btn = div()
+                .id(ElementId::Integer(2_200_000 + tab.id as u64))
+                .h(px(settings.panel_tab_close_height))
+                .w(px(settings.panel_tab_close_width))
+                .rounded_sm()
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .text_color(theme.muted_foreground)
+                .hover(|s| s.bg(theme.muted).text_color(theme.foreground))
+                .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                    this.toggle_tab_menu(panel_id, idx, cx);
+                }))
+                .child(Icon::new(IconName::Menu).size_3());
+
+            let mut tab_el = div()
+                .h(px(settings.panel_tab_height))
+                .flex()
+                .flex_row()
+                .items_center()
+                .bg(if is_active { theme.background } else { theme.secondary })
+                .border_1()
+                .border_color(theme.border)
+                .rounded_sm()
+                .text_color(if is_active { theme.foreground } else { theme.muted_foreground })
+                .hover(|s| s.bg(theme.muted).text_color(theme.foreground))
+                .child(tab_select)
+                .child(menu_btn)
+                .child(div().w(px(2.)));
 
             if panel_tabs.tabs.len() > 1 {
-                div()
-                    .flex()
-                    .items_center()
-                    .border_1()
-                    .border_color(theme.border)
-                    .rounded_sm()
-                    .child(tab_select)
+                tab_el = tab_el
+                    .child(div().w(px(1.)))
                     .child(
                         div()
                             .id(ElementId::Integer(2_100_000 + tab.id as u64))
@@ -2451,56 +2560,75 @@ fn panel_header(
                             .flex()
                             .items_center()
                             .justify_center()
+                            .cursor_pointer()
                             .text_color(theme.muted_foreground)
                             .hover(|s| s.bg(theme.muted).text_color(theme.foreground))
                             .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
                                 this.remove_panel_tab(dashboard_id, panel_id, idx, cx);
                             }))
-                            .child(Icon::new(IconName::Close).size_3()),
+                            .child(Icon::new(IconName::Close).size_3())
                     )
-                    .into_any_element()
-            } else {
-                tab_select.into_any_element()
+                    .child(div().w(px(2.)));
             }
+
+            div()
+                .relative()
+                .child(tab_el)
+                .children(if is_menu_open {
+                    Some(
+                        div()
+                            .absolute()
+                            .top_full()
+                            .left_0()
+                            .bg(theme.background)
+                            .border_1()
+                            .border_color(theme.border)
+                            .rounded_sm()
+                            .p_1()
+                            .min_w(px(100.))
+                            .flex()
+                            .flex_col()
+                            .shadow_md()
+                            .child(
+                                dropdown_item(
+                                    ElementId::Integer(2_300_000 + tab.id as u64 * 10 + 1),
+                                    "Terminal",
+                                    cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                        this.open_menu = None;
+                                        this.set_panel_tab_content(dashboard_id, panel_id, PanelContent::Terminal, window, cx);
+                                    }),
+                                    theme
+                                )
+                            )
+                            .child(
+                                dropdown_item(
+                                    ElementId::Integer(2_300_000 + tab.id as u64 * 10 + 2),
+                                    "Explorer",
+                                    cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                        this.open_menu = None;
+                                        this.set_panel_tab_content(dashboard_id, panel_id, PanelContent::FileExplorer, window, cx);
+                                    }),
+                                    theme
+                                )
+                            )
+                            .child(
+                                dropdown_item(
+                                    ElementId::Integer(2_300_000 + tab.id as u64 * 10 + 3),
+                                    "Git",
+                                    cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                        this.open_menu = None;
+                                        this.set_panel_tab_content(dashboard_id, panel_id, PanelContent::Git, window, cx);
+                                    }),
+                                    theme
+                                )
+                            )
+                    )
+                } else {
+                    None
+                })
+                .into_any_element()
         })
         .collect();
-
-    let term_tab = tab_button(
-        ElementId::Integer(3_000_000 + (dashboard_id as u64 * 1_000) + panel_id as u64 * 100 + 3),
-        "Terminal".to_string(),
-        active_content == PanelContent::Terminal,
-        settings,
-        theme,
-        cx.listener(move |this, _: &ClickEvent, window, cx| {
-            this.set_panel_tab_content(
-                dashboard_id,
-                panel_id,
-                PanelContent::Terminal,
-                window,
-                cx,
-            );
-        }),
-    );
-    let explorer_tab = tab_button(
-        ElementId::Integer(3_000_000 + (dashboard_id as u64 * 1_000) + panel_id as u64 * 100 + 7),
-        "Explorer".to_string(),
-        active_content == PanelContent::FileExplorer,
-        settings,
-        theme,
-        cx.listener(move |this, _: &ClickEvent, window, cx| {
-            this.set_panel_tab_content(dashboard_id, panel_id, PanelContent::FileExplorer, window, cx);
-        }),
-    );
-    let git_tab = tab_button(
-        ElementId::Integer(3_000_000 + (dashboard_id as u64 * 1_000) + panel_id as u64 * 100 + 8),
-        "Git".to_string(),
-        active_content == PanelContent::Git,
-        settings,
-        theme,
-        cx.listener(move |this, _: &ClickEvent, window, cx| {
-            this.set_panel_tab_content(dashboard_id, panel_id, PanelContent::Git, window, cx);
-        }),
-    );
 
     let add_panel_tab_btn = action_icon_button(
         ElementId::Integer(3_000_000 + (dashboard_id as u64 * 1_000) + panel_id as u64 * 100 + 1),
@@ -2568,10 +2696,6 @@ fn panel_header(
         .gap_px()
         .children(tab_buttons)
         .child(add_panel_tab_btn)
-        .child(div().w(px(8.)))
-        .child(term_tab)
-        .child(explorer_tab)
-        .child(git_tab)
         .child(div().flex_1())
         .child(editor_toggle)
         .child(div().w(px(8.)))
@@ -2584,38 +2708,6 @@ fn panel_header(
         .into_any_element()
 }
 
-fn tab_button(
-    eid: ElementId,
-    label: String,
-    active: bool,
-    settings: &LayoutSettings,
-    theme: &gpui_component::theme::Theme,
-    handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
-    div()
-        .id(eid)
-        .h(px(settings.panel_tab_height))
-        .px_2()
-        .flex()
-        .items_center()
-        .text_xs()
-        .font_bold()
-        .cursor_pointer()
-        .text_color(if active {
-            theme.foreground
-        } else {
-            theme.muted_foreground
-        })
-        .border_b_2()
-        .border_color(if active {
-            theme.accent
-        } else {
-            gpui::transparent_black()
-        })
-        .hover(|s| s.text_color(theme.foreground))
-        .on_click(handler)
-        .child(label)
-}
 
 fn action_icon_button(
     eid: ElementId,
@@ -4648,5 +4740,42 @@ fn render_panel_editor(
         .child(toolbar)
         .child(body)
         .into_any_element()
+}
+
+fn content_title(content: &PanelContent) -> String {
+    match content {
+        PanelContent::Terminal => "terminal".to_string(),
+        PanelContent::FileExplorer => "explorer".to_string(),
+        PanelContent::Git => "git".to_string(),
+        PanelContent::Editor { path, is_diff, .. } => {
+            let name = path.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "editor".to_string());
+            if *is_diff {
+                format!("diff: {name}")
+            } else {
+                name
+            }
+        }
+    }
+}
+
+fn dropdown_item(
+    eid: ElementId,
+    label: &'static str,
+    handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    theme: &gpui_component::theme::Theme,
+) -> impl IntoElement {
+    div()
+        .id(eid)
+        .px_2()
+        .py_1()
+        .rounded_sm()
+        .flex()
+        .items_center()
+        .text_color(theme.foreground)
+        .hover(|s| s.bg(theme.muted).text_color(theme.accent))
+        .on_click(handler)
+        .child(label)
 }
 
