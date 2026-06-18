@@ -63,6 +63,10 @@ pub struct TerminalModel {
     pub selection_head: Option<(usize, usize)>,
     pub selection_dragging: bool,
     pub cursor_blink_visible: bool,
+    pub needs_attention: bool,
+    pub last_output_time: std::time::Instant,
+    pub process_ongoing: bool,
+    pub job_done: bool,
 }
 
 impl TerminalModel {
@@ -166,6 +170,7 @@ impl TerminalModel {
                         model.terminal.vt_write(&buf);
                         model.new_output = true;
                         model.cursor_blink_visible = true;
+                        model.last_output_time = std::time::Instant::now();
                         cx.notify();
                     })
                     .ok();
@@ -211,6 +216,10 @@ impl TerminalModel {
             selection_head: None,
             selection_dragging: false,
             cursor_blink_visible: true,
+            needs_attention: false,
+            last_output_time: std::time::Instant::now(),
+            process_ongoing: false,
+            job_done: false,
         }
     }
 
@@ -341,6 +350,8 @@ impl TerminalModel {
     /// respects terminal modes (application cursor keys, Kitty keyboard
     /// protocol, etc.).  Returns the bytes to write to the PTY.
     pub fn encode_keystroke(&mut self, k: &Keystroke) -> Vec<u8> {
+        self.needs_attention = false;
+        self.job_done = false;
         self.cursor_blink_visible = true;
         let ghost_key = gpui_key_to_ghostty(k.key.as_str());
         let mods = gpui_mods_to_ghostty(&k.modifiers);
@@ -376,6 +387,8 @@ impl TerminalModel {
     }
 
     pub fn send_key(&mut self, bytes: &[u8]) {
+        self.needs_attention = false;
+        self.job_done = false;
         if let Ok(mut w) = self.writer.lock() {
             let _ = w.write_all(bytes);
         }
@@ -494,6 +507,33 @@ impl TerminalModel {
 
     pub fn shell_pid(&self) -> Option<u32> {
         self.shell_pid
+    }
+
+    pub fn get_last_nonempty_line(&mut self) -> Option<String> {
+        let snap = self.render_state.update(&self.terminal).ok()?;
+        let mut row_it = self.row_iter.update(&snap).ok()?;
+        let mut last_nonempty = None;
+        while let Some(row) = row_it.next() {
+            let mut cell_it = self.cell_iter.update(row).ok()?;
+            let mut line = String::new();
+            while let Some(cell) = cell_it.next() {
+                let grapheme_len = cell.graphemes_len().unwrap_or(0);
+                let ch = if grapheme_len > 0 {
+                    cell.graphemes()
+                        .ok()
+                        .and_then(|g| g.into_iter().next())
+                        .unwrap_or(' ')
+                } else {
+                    ' '
+                };
+                line.push(ch);
+            }
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                last_nonempty = Some(trimmed.to_string());
+            }
+        }
+        last_nonempty
     }
 }
 

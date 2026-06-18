@@ -507,6 +507,21 @@ impl DashboardView {
         self.open_menu = None;
         if dashboard_id != self.active_dashboard_id && self.dashboards.contains_key(&dashboard_id) {
             self.active_dashboard_id = dashboard_id;
+
+            // Clear job_done and needs_attention for all terminals in the newly active dashboard
+            if let Some(dashboard) = self.dashboards.get(&dashboard_id) {
+                for panel_tabs in dashboard.panel_tabs.values() {
+                    for tab in &panel_tabs.tabs {
+                        if let Some(terminal) = self.terminals.get(&tab.id) {
+                            terminal.update(cx, |m, _| {
+                                m.job_done = false;
+                                m.needs_attention = false;
+                            });
+                        }
+                    }
+                }
+            }
+
             self.persist(cx);
             cx.notify();
         }
@@ -671,6 +686,68 @@ impl DashboardView {
             }
         }
 
+        let shell_pids: Vec<u32> = self.terminals.values().filter_map(|t| t.read(cx).shell_pid()).collect();
+        let descendants_map = get_all_terminal_descendants(&shell_pids);
+        let mut attention_changed = false;
+
+        for (tab_id, terminal) in &self.terminals {
+            let mut check_needs_attention = false;
+            let mut agent_name = String::new();
+            let mut has_descendants = false;
+            if let Some(pid) = terminal.read(cx).shell_pid() {
+                if let Some(descendants) = descendants_map.get(&pid) {
+                    if !descendants.is_empty() {
+                        has_descendants = true;
+                    }
+                    for (_child_pid, cmd) in descendants {
+                        if is_llm_cli_agent(cmd) {
+                            check_needs_attention = true;
+                            agent_name = extract_agent_name(cmd);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if check_needs_attention {
+                let is_idle = std::time::Instant::now()
+                    .duration_since(terminal.read(cx).last_output_time)
+                    > Duration::from_millis(1500);
+                if is_idle {
+                    let last_line = terminal.update(cx, |m, _| m.get_last_nonempty_line());
+                    let has_prompt = if let Some(ref line) = last_line {
+                        line_looks_like_prompt(line)
+                    } else {
+                        false
+                    };
+
+                    if has_prompt {
+                        let was_needed = terminal.read(cx).needs_attention;
+                        if !was_needed {
+                            terminal.update(cx, |m, _| {
+                                m.needs_attention = true;
+                            });
+                            attention_changed = true;
+                            let notification_msg = format!("{} in Tab {} is waiting for your input.", agent_name, tab_id);
+                            send_desktop_notification("Ghost-mux Attention Needed", &notification_msg);
+                        }
+                    }
+                }
+            }
+
+            let ongoing = has_descendants && !terminal.read(cx).needs_attention;
+            let was_ongoing = terminal.read(cx).process_ongoing;
+            if was_ongoing != ongoing {
+                terminal.update(cx, |m, _| {
+                    m.process_ongoing = ongoing;
+                    if was_ongoing && !ongoing {
+                        m.job_done = true;
+                    }
+                });
+                attention_changed = true;
+            }
+        }
+
         let mut dashboard_cwds_changed = false;
         for d in self.dashboards.values_mut() {
             let mut new_dir = None;
@@ -736,7 +813,8 @@ impl DashboardView {
             || snapshot != self.memory_snapshot
             || cwds_changed
             || git_changed
-            || dashboard_cwds_changed;
+            || dashboard_cwds_changed
+            || attention_changed;
         self.terminal_memory = updated;
         self.memory_snapshot = snapshot;
         if dashboard_cwds_changed {
@@ -1123,6 +1201,14 @@ impl DashboardView {
             if let Some(panel) = dashboard.panel_tabs.get_mut(&panel_id) {
                 if tab_idx < panel.tabs.len() && tab_idx != panel.active_tab {
                     panel.active_tab = tab_idx;
+                    if let Some(tab) = panel.tabs.get(tab_idx) {
+                        if let Some(terminal) = self.terminals.get(&tab.id) {
+                            terminal.update(cx, |m, _| {
+                                m.needs_attention = false;
+                                m.job_done = false;
+                            });
+                        }
+                    }
                     self.persist(cx);
                     cx.notify();
                 }
@@ -1460,6 +1546,7 @@ impl DashboardView {
                         is_editor_on,
                         &self.settings.layout,
                         self.open_menu,
+                        &self.terminals,
                         cx,
                     ))
             )
@@ -1945,6 +2032,94 @@ fn dashboard_sidebar(view: &DashboardView, cx: &mut Context<DashboardView>) -> A
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| dashboard.current_dir.to_string_lossy().to_string());
 
+            let has_attention = {
+                let mut attention = false;
+                for panel_tabs in dashboard.panel_tabs.values() {
+                    for tab in &panel_tabs.tabs {
+                        if let Some(terminal) = view.terminals.get(&tab.id) {
+                            if terminal.read(cx).needs_attention {
+                                attention = true;
+                                break;
+                            }
+                        }
+                    }
+                    if attention {
+                        break;
+                    }
+                }
+                attention
+            };
+
+            let has_ongoing = {
+                let mut ongoing = false;
+                for panel_tabs in dashboard.panel_tabs.values() {
+                    for tab in &panel_tabs.tabs {
+                        if let Some(terminal) = view.terminals.get(&tab.id) {
+                            if terminal.read(cx).process_ongoing {
+                                ongoing = true;
+                                break;
+                            }
+                        }
+                    }
+                    if ongoing {
+                        break;
+                    }
+                }
+                ongoing
+            };
+
+            let has_done = {
+                let mut done = false;
+                for panel_tabs in dashboard.panel_tabs.values() {
+                    for tab in &panel_tabs.tabs {
+                        if let Some(terminal) = view.terminals.get(&tab.id) {
+                            if terminal.read(cx).job_done {
+                                done = true;
+                                break;
+                            }
+                        }
+                    }
+                    if done {
+                        break;
+                    }
+                }
+                done
+            };
+
+            let badge = if has_attention {
+                Some(
+                    div()
+                        .w(px(8.))
+                        .h(px(8.))
+                        .rounded_full()
+                        .bg(rgb(0xf47067))
+                        .ml_2()
+                )
+            } else {
+                None
+            };
+
+            let spinner = if has_ongoing {
+                Some(
+                    div()
+                        .ml_2()
+                        .child(gpui_component::spinner::Spinner::new().xsmall())
+                )
+            } else {
+                None
+            };
+
+            let done_badge = if has_done {
+                Some(
+                    div()
+                        .ml_2()
+                        .text_color(rgb(0x57c994))
+                        .child(Icon::new(IconName::Check).size_3())
+                )
+            } else {
+                None
+            };
+
             let row = div()
                 .id(ElementId::Integer(1_000_000 + dashboard.id as u64))
                 .w_full()
@@ -1980,9 +2155,18 @@ fn dashboard_sidebar(view: &DashboardView, cx: &mut Context<DashboardView>) -> A
                         .overflow_hidden()
                         .child(
                             div()
-                                .text_xs()
-                                .font_semibold()
-                                .child(dashboard.title.clone()),
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_semibold()
+                                        .child(dashboard.title.clone())
+                                )
+                                .children(badge)
+                                .children(spinner)
+                                .children(done_badge),
                         )
                         .child(
                             div()
@@ -2247,6 +2431,146 @@ fn read_terminal_cwd(pid: u32) -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn get_all_terminal_descendants(shell_pids: &[u32]) -> HashMap<u32, Vec<(u32, String)>> {
+    let mut result = HashMap::new();
+    if shell_pids.is_empty() {
+        return result;
+    }
+    let output = std::process::Command::new("ps")
+        .args(["-ax", "-o", "pid=,ppid=,command="])
+        .output();
+    if let Ok(out) = output {
+        if out.status.success() {
+            if let Ok(raw) = String::from_utf8(out.stdout) {
+                let mut parent_to_children = HashMap::new();
+                let mut pid_to_command = HashMap::new();
+                for line in raw.lines() {
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    if parts.len() >= 3 {
+                        if let (Ok(pid), Ok(ppid)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>()) {
+                            let cmd = parts[2..].join(" ");
+                            pid_to_command.insert(pid, cmd);
+                            parent_to_children.entry(ppid).or_insert_with(Vec::new).push(pid);
+                        }
+                    }
+                }
+                for &shell_pid in shell_pids {
+                    let mut descendants = Vec::new();
+                    let mut queue = vec![shell_pid];
+                    let mut visited = std::collections::HashSet::new();
+                    visited.insert(shell_pid);
+                    while let Some(current_pid) = queue.pop() {
+                        if let Some(children) = parent_to_children.get(&current_pid) {
+                            for &child in children {
+                                if !visited.contains(&child) {
+                                    visited.insert(child);
+                                    if let Some(cmd) = pid_to_command.get(&child) {
+                                        descendants.push((child, cmd.clone()));
+                                    }
+                                    queue.push(child);
+                                }
+                            }
+                        }
+                    }
+                    result.insert(shell_pid, descendants);
+                }
+            }
+        }
+    }
+    result
+}
+
+fn is_llm_cli_agent(cmd: &str) -> bool {
+    let lower = cmd.to_lowercase();
+    if lower.contains("claude-code") 
+       || lower.contains("opencode") 
+       || lower.contains("open-code") 
+       || lower.contains("aider") 
+       || lower.contains("mentat") 
+       || lower.contains("copilot-cli")
+       || lower.contains("gh-copilot")
+       || lower.contains("pi-coding-agent")
+       || lower.contains("earendil-works/pi")
+    {
+        return true;
+    }
+    
+    let parts: Vec<&str> = lower.split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_').collect();
+    for part in parts {
+        if part == "claude" || part == "pi" {
+            return true;
+        }
+    }
+    false
+}
+
+fn extract_agent_name(cmd: &str) -> String {
+    let lower = cmd.to_lowercase();
+    if lower.contains("claude-code") || lower.contains("claude") {
+        "Claude Code".to_string()
+    } else if lower.contains("opencode") || lower.contains("open-code") {
+        "OpenCode".to_string()
+    } else if lower.contains("aider") {
+        "Aider".to_string()
+    } else if lower.contains("mentat") {
+        "Mentat".to_string()
+    } else if lower.contains("copilot") {
+        "Copilot CLI".to_string()
+    } else if lower.contains("pi") {
+        "Pi CLI".to_string()
+    } else {
+        "LLM Agent".to_string()
+    }
+}
+
+fn line_looks_like_prompt(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let is_prompt = trimmed.ends_with('>')
+        || trimmed.ends_with('?')
+        || trimmed.ends_with(':')
+        || trimmed.ends_with("❯")
+        || trimmed.ends_with("$")
+        || trimmed.ends_with("#")
+        || trimmed.ends_with("%")
+        || trimmed.ends_with('π')
+        || trimmed.ends_with('›')
+        || trimmed.ends_with('»');
+    
+    if is_prompt {
+        return true;
+    }
+
+    let line_lower = trimmed.to_lowercase();
+    line_lower.contains("enter a message")
+        || line_lower.contains("input")
+        || line_lower.contains("prompt")
+        || line_lower.contains("press enter")
+        || line_lower.contains("user:")
+}
+
+fn send_desktop_notification(title: &str, message: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("osascript")
+            .arg("-e")
+            .arg(format!(
+                "display notification {:?} with title {:?}",
+                message, title
+            ))
+            .spawn();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = std::process::Command::new("notify-send")
+            .arg(title)
+            .arg(message)
+            .spawn();
+    }
 }
 
 fn format_kb_as_mb(kb: u64) -> String {
@@ -2614,6 +2938,7 @@ fn panel_header(
     is_editor_on: bool,
     settings: &LayoutSettings,
     open_menu: Option<(usize, usize)>,
+    terminals: &HashMap<usize, Entity<TerminalModel>>,
     cx: &mut Context<DashboardView>,
 ) -> AnyElement {
     let theme = cx.theme();
@@ -2655,18 +2980,77 @@ fn panel_header(
 
             let is_menu_open = open_menu == Some((panel_id, idx));
 
+            let tab_needs_attention = match &tab.content {
+                PanelContent::Terminal => {
+                    terminals.get(&tab.id).map_or(false, |term| term.read(cx).needs_attention)
+                }
+                _ => false,
+            };
+
+            let tab_process_ongoing = match &tab.content {
+                PanelContent::Terminal => {
+                    terminals.get(&tab.id).map_or(false, |term| term.read(cx).process_ongoing)
+                }
+                _ => false,
+            };
+
+            let tab_job_done = match &tab.content {
+                PanelContent::Terminal => {
+                    terminals.get(&tab.id).map_or(false, |term| term.read(cx).job_done)
+                }
+                _ => false,
+            };
+
+            let tab_badge = if tab_needs_attention {
+                Some(
+                    div()
+                        .w(px(6.))
+                        .h(px(6.))
+                        .rounded_full()
+                        .bg(rgb(0xf47067))
+                        .ml_1()
+                )
+            } else {
+                None
+            };
+
+            let tab_spinner = if tab_process_ongoing {
+                Some(
+                    div()
+                        .ml_1()
+                        .child(gpui_component::spinner::Spinner::new().xsmall())
+                )
+            } else {
+                None
+            };
+
+            let tab_done_badge = if tab_job_done {
+                Some(
+                    div()
+                        .ml_1()
+                        .text_color(rgb(0x57c994))
+                        .child(Icon::new(IconName::Check).size_3())
+                )
+            } else {
+                None
+            };
+
             let tab_select = div()
                 .id(ElementId::Integer(2_000_000 + tab.id as u64))
                 .flex_1()
                 .h_full()
                 .flex()
+                .flex_row()
                 .items_center()
                 .px_2()
                 .cursor_pointer()
                 .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
                     this.switch_panel_tab(dashboard_id, panel_id, idx, cx);
                 }))
-                .child(display_title.clone());
+                .child(div().child(display_title.clone()))
+                .children(tab_badge)
+                .children(tab_spinner)
+                .children(tab_done_badge);
 
             let menu_btn = div()
                 .id(ElementId::Integer(2_200_000 + tab.id as u64))
@@ -3925,6 +4309,7 @@ fn render_terminal(
     let term_entity_select_move = term.clone();
     let term_entity_select_end = term.clone();
     let term_entity_select_end_out = term.clone();
+    let term_entity_click = term.clone();
     let fh_click = focus_handle.clone();
     let fh_click_mouse_down = focus_handle.clone();
     let term_font_family = terminal_settings.font_family.clone();
@@ -3963,11 +4348,17 @@ fn render_terminal(
         .on_click(move |_, window, cx| {
             window.focus(&fh_click, cx);
             crate::browser::restore_gpui_focus(window);
+            term_entity_click.update(cx, |m, _| {
+                m.needs_attention = false;
+                m.job_done = false;
+            });
         })
         .on_mouse_down(MouseButton::Left, move |event, window, cx| {
             window.focus(&fh_click_mouse_down, cx);
             crate::browser::restore_gpui_focus(window);
             term_entity_select_start.update(cx, |m, inner_cx| {
+                m.needs_attention = false;
+                m.job_done = false;
                 if let Some((row, col)) = terminal_position_to_cell(
                     event.position,
                     m.viewport_bounds.clone(),
@@ -3978,8 +4369,8 @@ fn render_terminal(
                     true,
                 ) {
                     m.begin_selection(row, col);
-                    inner_cx.notify();
                 }
+                inner_cx.notify();
             });
             cx.stop_propagation();
         })
