@@ -2,7 +2,7 @@
 
 Ghost-mux is a high-performance GPUI-based desktop dashboard builder. The application provides a highly responsive workspace starting with a single panel that can be split horizontally or vertically to build arbitrary, resizable grid layouts. It is styled with a custom dark-mode theme inspired by premium IDE interfaces and includes full terminal emulation, file exploration, git diffing, and live-adjustable configurations.
 
-![Ghost-mux Design Reference](assets/design/reference-theme.png)
+![Ghost-mux Design Reference](assets/design/reference-theme1.png)
 
 ---
 
