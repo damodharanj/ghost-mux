@@ -6,7 +6,7 @@ pub enum SplitDir {
 
 #[derive(Clone, Debug)]
 pub enum PanelLayout {
-    Leaf(usize),
+    Leaf(usize),   
     HSplit {
         left: Box<PanelLayout>,
         right: Box<PanelLayout>,
@@ -15,7 +15,7 @@ pub enum PanelLayout {
     VSplit {
         top: Box<PanelLayout>,
         bot: Box<PanelLayout>,
-        id: usize,
+        id: usize
     },
 }
 
@@ -133,4 +133,5 @@ pub enum PanelContent {
         is_diff: bool,
         status: Option<String>,
     },
+    Diagnostics,
 }

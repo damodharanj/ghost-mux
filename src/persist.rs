@@ -28,6 +28,7 @@ pub enum SerPanelContent {
     Browser {
         url: String,
     },
+    Diagnostics,
 }
 
 impl From<PanelContent> for SerPanelContent {
@@ -38,6 +39,7 @@ impl From<PanelContent> for SerPanelContent {
             PanelContent::Git => SerPanelContent::Git,
             PanelContent::Browser { url } => SerPanelContent::Browser { url },
             PanelContent::Editor { path, is_diff, status } => SerPanelContent::Editor { path, is_diff, status },
+            PanelContent::Diagnostics => SerPanelContent::Diagnostics,
         }
     }
 }
@@ -50,6 +52,7 @@ impl From<SerPanelContent> for PanelContent {
             SerPanelContent::FileExplorer => PanelContent::FileExplorer,
             SerPanelContent::Git => PanelContent::Git,
             SerPanelContent::Browser { url } => PanelContent::Browser { url },
+            SerPanelContent::Diagnostics => PanelContent::Diagnostics,
         }
     }
 }

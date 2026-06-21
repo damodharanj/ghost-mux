@@ -8,6 +8,7 @@ pub struct AppSettings {
     pub theme: ThemeSettings,
     pub layout: LayoutSettings,
     pub terminal: TerminalSettings,
+    pub lsp: LspSettings,
     pub agents: Vec<AgentConfig>,
 }
 
@@ -17,6 +18,7 @@ impl Default for AppSettings {
             theme: ThemeSettings::default(),
             layout: LayoutSettings::default(),
             terminal: TerminalSettings::default(),
+            lsp: LspSettings::default(),
             agents: vec![
                 AgentConfig {
                     name: "claude".to_string(),
@@ -146,4 +148,28 @@ pub struct AgentConfig {
     pub config_file: String,
     pub hook_type: String,
     pub enabled: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default)]
+pub struct LspSettings {
+    pub enabled: bool,
+    pub servers: std::collections::HashMap<String, Vec<String>>,
+}
+
+impl Default for LspSettings {
+    fn default() -> Self {
+        let mut servers = std::collections::HashMap::new();
+        servers.insert("rust".to_string(), vec!["rust-analyzer".to_string()]);
+        servers.insert("python".to_string(), vec!["pyright-langserver".to_string(), "--stdio".to_string()]);
+        servers.insert("typescript".to_string(), vec!["typescript-language-server".to_string(), "--stdio".to_string()]);
+        servers.insert("javascript".to_string(), vec!["typescript-language-server".to_string(), "--stdio".to_string()]);
+        servers.insert("html".to_string(), vec!["vscode-html-language-server".to_string(), "--stdio".to_string()]);
+        servers.insert("css".to_string(), vec!["vscode-css-language-server".to_string(), "--stdio".to_string()]);
+        servers.insert("tailwind".to_string(), vec!["tailwindcss-language-server".to_string(), "--stdio".to_string()]);
+        Self {
+            enabled: true,
+            servers,
+        }
+    }
 }

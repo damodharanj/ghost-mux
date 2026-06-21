@@ -87,7 +87,7 @@ You can use the helper shell scripts located in `tools/` depending on your opera
   ```bash
   ./tools/macos/build-production.sh
   ```
-  This script outputs a standalone executable with its dependency libraries to `dist/gpui-components-demo/`.
+  This script outputs a standalone executable with its dependency libraries to `dist/ghost-mux/`.
 - **Launch Production Release Bundle**:
   ```bash
   ./tools/macos/run-production.sh

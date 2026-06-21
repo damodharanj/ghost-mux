@@ -24,3 +24,14 @@ terminal:
   line_height: 21.0
   char_width: 7.2
   resize_debounce_ms: 150
+
+lsp:
+  enabled: true
+  servers:
+    rust: ["rust-analyzer"]
+    python: ["pyright-langserver", "--stdio"]
+    typescript: ["typescript-language-server", "--stdio"]
+    javascript: ["typescript-language-server", "--stdio"]
+    html: ["vscode-html-language-server", "--stdio"]
+    css: ["vscode-css-language-server", "--stdio"]
+    tailwind: ["tailwindcss-language-server", "--stdio"]

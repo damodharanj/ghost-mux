@@ -181,7 +181,15 @@ impl TerminalModel {
             if !buf.is_empty() {
                 entity
                     .update(cx, |model, cx| {
+                        let is_at_bottom = if let Ok(sb) = model.terminal.scrollbar() {
+                            sb.offset + sb.len >= sb.total
+                        } else {
+                            true
+                        };
                         model.terminal.vt_write(&buf);
+                        if is_at_bottom {
+                            let _ = model.terminal.scroll_viewport(ScrollViewport::Bottom);
+                        }
                         model.new_output = true;
                         model.cursor_blink_visible = true;
                         model.last_output_time = std::time::Instant::now();
@@ -248,11 +256,7 @@ impl TerminalModel {
     /// Uses split borrows so render_state, row_iter, cell_iter, and terminal
     /// can be accessed on a single `&mut self` without borrow conflicts.
     pub fn collect_rows(&mut self, is_focused: bool) -> (Vec<Vec<(char, u32, u32)>>, Option<(usize, usize)>, u32) {
-        // Scroll to bottom when new content arrives.
-        if self.new_output {
-            let _ = self.terminal.scroll_viewport(ScrollViewport::Bottom);
-            self.new_output = false;
-        }
+        self.new_output = false;
 
         // render_state.update borrows render_state mutably and terminal
         // immutably.  The terminal borrow ends when update() returns.
@@ -479,6 +483,10 @@ impl TerminalModel {
         if lines != 0 {
             let _ = self.terminal.scroll_viewport(ScrollViewport::Delta(lines));
         }
+    }
+
+    pub fn scrollbar_info(&self) -> Option<libghostty_vt::ffi::GhosttyTerminalScrollbar> {
+        self.terminal.scrollbar().ok()
     }
 
     pub fn set_pending_resize(&mut self, rows: usize, cols: usize) -> Option<u64> {

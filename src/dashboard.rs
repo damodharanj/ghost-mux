@@ -2,14 +2,15 @@ use gpui::*;
 use gpui::prelude::FluentBuilder;
 use gpui::{InteractiveElement, ParentElement, Styled, StatefulInteractiveElement};
 use gpui_component::{
-    input::{Input, InputState},
+    input::{Input, InputState, RopeExt},
     resizable::{h_resizable, resizable_panel, v_resizable, ResizableState, ResizablePanelEvent},
     ActiveTheme, *,
 };
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
+use lsp_types;
 
 use crate::layout::{PanelContent, PanelLayout, SplitDir};
 use crate::persist::{
@@ -194,6 +195,15 @@ pub struct ExplorerContextMenu {
     pub is_root: bool,
 }
 
+#[derive(Clone, Debug)]
+pub struct TabMenuState {
+    pub dashboard_id: usize,
+    pub panel_id: usize,
+    pub tab_idx: usize,
+    pub tab_id: usize,
+    pub position: gpui::Point<gpui::Pixels>,
+}
+
 #[allow(dead_code)]
 #[derive(Clone)]
 pub struct ExplorerDragItem {
@@ -267,10 +277,11 @@ pub struct DashboardView {
     pub git_collapsed_paths: HashMap<usize, std::collections::HashSet<PathBuf>>,
     pub git_diff_scroll_handles: std::cell::RefCell<HashMap<usize, UniformListScrollHandle>>,
     pub git_diff_div_scroll_handles: std::cell::RefCell<HashMap<usize, gpui::ScrollHandle>>,
+    pub tab_scroll_handles: std::cell::RefCell<HashMap<usize, gpui::ScrollHandle>>,
     pub next_id: usize,
     pub modal_editor: Option<ModalEditorState>,
     pub editor_panels: std::collections::HashSet<usize>,
-    pub open_menu: Option<(usize, usize)>, // (panel_id, tab_idx)
+    pub open_menu: Option<TabMenuState>,
     pub panel_focus_handles: HashMap<usize, FocusHandle>,
     pub hook_port: Option<u16>,
     pub hook_receiver: Option<std::sync::mpsc::Receiver<crate::hook_server::HookEvent>>,
@@ -278,6 +289,11 @@ pub struct DashboardView {
     pub explorer_context_menu: Option<ExplorerContextMenu>,
     pub original_contents: HashMap<usize, String>,
     pub editor_subscriptions: HashMap<usize, Subscription>,
+    pub lsp_clients: HashMap<(PathBuf, String), std::sync::Arc<crate::lsp::LspClient>>,
+    pub lsp_diagnostics: HashMap<PathBuf, Vec<lsp_types::Diagnostic>>,
+    pub lsp_document_versions: HashMap<PathBuf, i32>,
+    pub last_lsp_statuses: HashMap<(PathBuf, String), String>,
+    pub lsp_loading: HashMap<PathBuf, bool>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -328,6 +344,7 @@ impl DashboardView {
             git_collapsed_paths: HashMap::new(),
             git_diff_scroll_handles: std::cell::RefCell::new(HashMap::new()),
             git_diff_div_scroll_handles: std::cell::RefCell::new(HashMap::new()),
+            tab_scroll_handles: std::cell::RefCell::new(HashMap::new()),
             next_id: 0,
             modal_editor: None,
             editor_panels: std::collections::HashSet::new(),
@@ -339,6 +356,11 @@ impl DashboardView {
             explorer_context_menu: None,
             original_contents: HashMap::new(),
             editor_subscriptions: HashMap::new(),
+            lsp_clients: HashMap::new(),
+            lsp_diagnostics: HashMap::new(),
+            lsp_document_versions: HashMap::new(),
+            last_lsp_statuses: HashMap::new(),
+            lsp_loading: HashMap::new(),
         };
 
         let (tx, rx) = std::sync::mpsc::channel();
@@ -373,12 +395,21 @@ impl DashboardView {
             view.active_dashboard_id = first_dashboard;
         }
 
-        view.refresh_terminal_memory(cx);
+        for id in view.dashboard_order.clone() {
+            view.ensure_dashboard_lsps(id, window, cx);
+        }
+
+        view.refresh_terminal_memory(window, cx);
+        let window_handle = window.window_handle();
         cx.spawn(async move |entity, cx| loop {
             cx.background_executor().timer(Duration::from_secs(1)).await;
-            entity
-                .update(cx, |this, cx| this.refresh_terminal_memory(cx))
-                .ok();
+            let _ = cx.update(|cx| {
+                let _ = cx.update_window(window_handle, |_, window, cx| {
+                    let _ = entity.update(cx, |this, cx| {
+                        this.refresh_terminal_memory(window, cx);
+                    });
+                });
+            });
         })
         .detach();
         view
@@ -589,11 +620,12 @@ impl DashboardView {
         let title = format!("Dashboard {}", self.dashboard_order.len() + 1);
         let new_id = self.create_dashboard(title, window, cx);
         self.active_dashboard_id = new_id;
+        self.ensure_dashboard_lsps(new_id, window, cx);
         self.persist(cx);
         cx.notify();
     }
 
-    pub fn switch_dashboard(&mut self, dashboard_id: usize, cx: &mut Context<Self>) {
+    pub fn switch_dashboard(&mut self, dashboard_id: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.open_menu = None;
         if dashboard_id != self.active_dashboard_id && self.dashboards.contains_key(&dashboard_id) {
             self.active_dashboard_id = dashboard_id;
@@ -612,8 +644,164 @@ impl DashboardView {
                 }
             }
 
+            self.ensure_dashboard_lsps(dashboard_id, window, cx);
+
             self.persist(cx);
             cx.notify();
+        }
+    }
+
+    pub fn ensure_dashboard_lsps(&mut self, _dashboard_id: usize, _window: &mut Window, _cx: &mut Context<Self>) {
+        // Auto-starting of LSP servers disabled. Users can trigger them manually.
+    }
+
+    pub fn attach_lsp_to_editor(
+        &mut self,
+        _tab_id: usize,
+        editor: &Entity<InputState>,
+        path: &Path,
+        workspace_root: &Path,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.settings.lsp.enabled {
+            return;
+        }
+        let lang = detect_language(path);
+        let mut client_cmds = vec![];
+        if let Some(_) = self.settings.lsp.servers.get(lang) {
+            client_cmds.push((lang.to_string(), ()));
+        }
+        if lang == "html" || lang == "css" || lang == "javascript" || lang == "typescript" {
+            if let Some(_) = self.settings.lsp.servers.get("tailwind") {
+                client_cmds.push(("tailwind".to_string(), ()));
+            }
+        }
+
+        let mut active_clients = vec![];
+        for (client_name, _) in client_cmds {
+            let key = (workspace_root.to_path_buf(), client_name);
+            if let Some(client) = self.lsp_clients.get(&key) {
+                active_clients.push(client.clone());
+            }
+        }
+
+        if !active_clients.is_empty() {
+            // Check if document was already opened/versioned
+            let is_first_open = !self.lsp_document_versions.contains_key(path);
+            if is_first_open {
+                self.lsp_document_versions.insert(path.to_path_buf(), 1);
+            }
+            
+            let content_clone = editor.read(cx).text().to_string();
+            for client in &active_clients {
+                if let Ok(uri) = crate::lsp::path_to_uri(path) {
+                    let text_document = lsp_types::TextDocumentItem {
+                        uri,
+                        language_id: lang.to_string(),
+                        version: 1,
+                        text: content_clone.clone(),
+                    };
+                    let params = lsp_types::DidOpenTextDocumentParams { text_document };
+                    let _ = client.send_notification("textDocument/didOpen", params);
+                }
+            }
+
+            let comp_providers = active_clients.iter().map(|client| crate::lsp::GhostCompletionProvider {
+                client: client.clone(),
+                file_path: path.to_path_buf(),
+            }).collect::<Vec<_>>();
+
+            let hover_providers = active_clients.iter().map(|client| crate::lsp::GhostHoverProvider {
+                client: client.clone(),
+                file_path: path.to_path_buf(),
+            }).collect::<Vec<_>>();
+
+            let def_providers = active_clients.iter().map(|client| crate::lsp::GhostDefinitionProvider {
+                client: client.clone(),
+                file_path: path.to_path_buf(),
+            }).collect::<Vec<_>>();
+
+            editor.update(cx, |editor, _| {
+                editor.lsp.completion_provider = Some(std::rc::Rc::new(crate::lsp::CompoundCompletionProvider {
+                    providers: comp_providers,
+                }));
+                editor.lsp.hover_provider = Some(std::rc::Rc::new(crate::lsp::CompoundHoverProvider {
+                    providers: hover_providers,
+                }));
+                editor.lsp.definition_provider = Some(std::rc::Rc::new(crate::lsp::CompoundDefinitionProvider {
+                    providers: def_providers,
+                }));
+            });
+        }
+    }
+
+    fn find_editor_tab_info(&self, tab_id: usize) -> Option<(PathBuf, PathBuf)> {
+        for db in self.dashboards.values() {
+            for panel in db.panel_tabs.values() {
+                if let Some(tab) = panel.tabs.iter().find(|t| t.id == tab_id) {
+                    if let PanelContent::Editor { path, is_diff: false, .. } = &tab.content {
+                        return Some((path.clone(), db.current_dir.clone()));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    pub fn start_lsp_server(
+        &mut self,
+        dashboard_id: usize,
+        lang: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.settings.lsp.enabled {
+            return;
+        }
+        let Some(dashboard) = self.dashboards.get(&dashboard_id) else {
+            return;
+        };
+        let current_dir = dashboard.current_dir.clone();
+        let Some(cmd) = self.settings.lsp.servers.get(lang) else {
+            return;
+        };
+
+        let key = (current_dir.clone(), lang.to_string());
+        if !self.lsp_clients.contains_key(&key) {
+            if let Ok(client) = crate::lsp::LspClient::start(&current_dir, cmd, lang) {
+                self.lsp_clients.insert(key.clone(), client.clone());
+
+                let diagnostics_rx = client.diagnostics_rx.clone();
+                let window_handle = window.window_handle();
+                let entity_weak = cx.weak_entity();
+                cx.spawn(async move |_, cx| {
+                    while let Ok((uri, diagnostics)) = diagnostics_rx.recv().await {
+                        let _ = cx.update(|cx| {
+                            let _ = cx.update_window(window_handle, |_, _, cx| {
+                                let _ = entity_weak.update(cx, |this, cx| {
+                                    this.handle_lsp_diagnostics(uri, diagnostics, cx);
+                                });
+                            });
+                        });
+                    }
+                }).detach();
+
+                // Wire this client into any open editors in the target dashboard that match the language
+                let tab_ids: Vec<usize> = self.editors.keys().copied().collect();
+                for tab_id in tab_ids {
+                    if let Some((path, workspace_root)) = self.find_editor_tab_info(tab_id) {
+                        let editor_lang = detect_language(&path);
+                        let is_match = editor_lang == lang || (lang == "tailwind" && (editor_lang == "html" || editor_lang == "css" || editor_lang == "javascript" || editor_lang == "typescript"));
+                        if is_match {
+                            if let Some(editor) = self.editors.get(&tab_id).cloned() {
+                                self.attach_lsp_to_editor(tab_id, &editor, &path, &workspace_root, window, cx);
+                            }
+                        }
+                    }
+                }
+                cx.notify();
+            }
         }
     }
 
@@ -764,7 +952,7 @@ impl DashboardView {
         theme.radius_lg = px(self.settings.theme.radius_lg);
     }
 
-    fn refresh_terminal_memory(&mut self, cx: &mut Context<Self>) {
+    fn refresh_terminal_memory(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mut attention_changed = false;
         if let Some(ref rx) = self.hook_receiver {
             while let Ok(event) = rx.try_recv() {
@@ -885,6 +1073,7 @@ impl DashboardView {
         }
 
         let mut dashboard_cwds_changed = false;
+        let mut lsps_to_ensure = Vec::new();
         for d in self.dashboards.values_mut() {
             let mut new_dir = None;
             for panel in d.panel_tabs.values() {
@@ -912,8 +1101,13 @@ impl DashboardView {
                 if d.current_dir != dir {
                     d.current_dir = dir;
                     dashboard_cwds_changed = true;
+                    lsps_to_ensure.push(d.id);
                 }
             }
+        }
+
+        for d_id in lsps_to_ensure {
+            self.ensure_dashboard_lsps(d_id, window, cx);
         }
 
         let mut cwds_changed = false;
@@ -942,6 +1136,16 @@ impl DashboardView {
             }
         }
 
+        let mut lsp_changed = false;
+        for (key, client) in &self.lsp_clients {
+            let status = client.status();
+            let entry = self.last_lsp_statuses.entry(key.clone()).or_insert_with(String::new);
+            if *entry != status {
+                *entry = status;
+                lsp_changed = true;
+            }
+        }
+
         let shells_rss_kb = updated.values().map(|s| s.rss_kb).sum();
         let app_rss_kb = read_app_phys_footprint_kb().unwrap_or(0);
         let snapshot = MemorySnapshot { app_rss_kb, shells_rss_kb };
@@ -950,7 +1154,8 @@ impl DashboardView {
             || cwds_changed
             || git_changed
             || dashboard_cwds_changed
-            || attention_changed;
+            || attention_changed
+            || lsp_changed;
         self.terminal_memory = updated;
         self.memory_snapshot = snapshot;
         if dashboard_cwds_changed {
@@ -1185,19 +1390,145 @@ impl DashboardView {
                         (ed, Some(content))
                     };
                     self.editors.insert(tab_id, editor.clone());
-                    if let Some(content) = content_str {
+                    if let Some(content) = content_str.clone() {
                         self.original_contents.insert(tab_id, content);
                     }
 
-                    let sub = cx.subscribe(&editor, move |_this, _editor, event, cx| {
-                        if let gpui_component::input::InputEvent::Change = event {
-                            cx.notify();
+                    if !is_diff && self.settings.lsp.enabled {
+                        let workspace_root = cwd.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+                        self.attach_lsp_to_editor(tab_id, &editor, &path, &workspace_root, window, cx);
+                    }
+
+                    let path_clone = path.clone();
+                    let window_handle = window.window_handle();
+                    let sub = cx.subscribe(&editor, move |this, editor, event, cx| {
+                        match event {
+                            gpui_component::input::InputEvent::Change => {
+                                let new_content = editor.read(cx).text().to_string();
+                                this.sync_lsp_document_change(&path_clone, new_content);
+                                cx.notify();
+                            }
+                            gpui_component::input::InputEvent::OpenUri { uri, range } => {
+                                let uri = uri.clone();
+                                let range = range.clone();
+                                if let Some((_, panel_id)) = this.find_panel_for_tab(tab_id) {
+                                    let entity = cx.weak_entity();
+                                    let _ = cx.update_window(window_handle, move |_, window, cx| {
+                                        let _ = entity.update(cx, |this, cx| {
+                                            this.handle_lsp_open_uri(uri, range, panel_id, window, cx);
+                                        });
+                                    });
+                                }
+                            }
+                            _ => {}
                         }
                     });
                     self.editor_subscriptions.insert(tab_id, sub);
                 }
             }
+            PanelContent::Diagnostics => {}
         }
+    }
+
+    pub fn handle_lsp_diagnostics(
+        &mut self,
+        uri: lsp_types::Uri,
+        diagnostics: Vec<lsp_types::Diagnostic>,
+        cx: &mut Context<Self>,
+    ) {
+        let Ok(path) = crate::lsp::uri_to_path(&uri) else { return; };
+        self.lsp_loading.remove(&path);
+        self.lsp_diagnostics.insert(path.clone(), diagnostics.clone());
+
+        for (tab_id, editor_state) in &self.editors {
+            let mut matches_file = false;
+            for db in self.dashboards.values() {
+                for panel in db.panel_tabs.values() {
+                    for tab in &panel.tabs {
+                        if tab.id == *tab_id {
+                            if let PanelContent::Editor { path: ref p, is_diff: false, .. } = tab.content {
+                                if p == &path {
+                                    matches_file = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if matches_file {
+                editor_state.update(cx, |editor, cx| {
+                    if let Some(diag_set) = editor.diagnostics_mut() {
+                        diag_set.clear();
+                        for d in &diagnostics {
+                            diag_set.push(d.clone());
+                        }
+                        cx.notify();
+                    }
+                });
+            }
+        }
+        cx.notify();
+    }
+
+    pub fn sync_lsp_document_change(&mut self, path: &Path, new_content: String) {
+        let uri = match crate::lsp::path_to_uri(path) {
+            Ok(u) => u,
+            Err(_) => return,
+        };
+        self.lsp_loading.insert(path.to_path_buf(), true);
+        let entry = self.lsp_document_versions.entry(path.to_path_buf()).or_insert(0);
+        *entry += 1;
+        let version = *entry;
+
+        for client in self.lsp_clients.values() {
+            let params = lsp_types::DidChangeTextDocumentParams {
+                text_document: lsp_types::VersionedTextDocumentIdentifier {
+                    uri: uri.clone(),
+                    version,
+                },
+                content_changes: vec![lsp_types::TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text: new_content.clone(),
+                }],
+            };
+            let _ = client.send_notification("textDocument/didChange", params);
+        }
+    }
+
+    pub fn handle_lsp_open_uri(
+        &mut self,
+        uri: lsp_types::Uri,
+        range: Option<lsp_types::Range>,
+        panel_id: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Ok(path) = crate::lsp::uri_to_path(&uri) else { return; };
+        let tab_id = self.open_file_in_panel(panel_id, path, false, None, window, cx);
+        if let Some(range) = range {
+            if let Some(editor) = self.editors.get(&tab_id) {
+                editor.update(cx, |editor, cx| {
+                    let start = editor.text().position_to_offset(&range.start);
+                    let end = editor.text().position_to_offset(&range.end);
+                    editor.select_text_range(start..end, cx);
+                    editor.scroll_to_offset(start, cx);
+                });
+            }
+        }
+    }
+
+    fn find_panel_for_tab(&self, tab_id: usize) -> Option<(usize, usize)> {
+        for (db_id, db) in &self.dashboards {
+            for (panel_id, panel) in &db.panel_tabs {
+                if panel.tabs.iter().any(|t| t.id == tab_id) {
+                    return Some((*db_id, *panel_id));
+                }
+            }
+        }
+        None
     }
 
     pub fn navigate_browser(&mut self, tab_id: usize, url: &str, cx: &mut Context<Self>) {
@@ -1303,6 +1634,29 @@ impl DashboardView {
         cx: &mut Context<Self>,
     ) {
         self.open_menu = None;
+
+        let mut path_to_close = None;
+        if let Some(dashboard) = self.dashboards.get(&dashboard_id) {
+            if let Some(panel) = dashboard.panel_tabs.get(&panel_id) {
+                if tab_idx < panel.tabs.len() {
+                    if let PanelContent::Editor { ref path, is_diff: false, .. } = panel.tabs[tab_idx].content {
+                        path_to_close = Some(path.clone());
+                    }
+                }
+            }
+        }
+
+        if let Some(path) = path_to_close {
+            if let Ok(uri) = crate::lsp::path_to_uri(&path) {
+                for client in self.lsp_clients.values() {
+                    let params = lsp_types::DidCloseTextDocumentParams {
+                        text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                    };
+                    let _ = client.send_notification("textDocument/didClose", params);
+                }
+            }
+        }
+
         let removed_tab_id = if let Some(dashboard) = self.dashboards.get_mut(&dashboard_id) {
             if let Some(panel) = dashboard.panel_tabs.get_mut(&panel_id) {
                 if panel.tabs.len() <= 1 || tab_idx >= panel.tabs.len() {
@@ -1386,6 +1740,7 @@ impl DashboardView {
         &mut self,
         dashboard_id: usize,
         panel_id: usize,
+        tab_idx: usize,
         content: PanelContent,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1393,13 +1748,13 @@ impl DashboardView {
         self.open_menu = None;
         let tab_id = if let Some(dashboard) = self.dashboards.get_mut(&dashboard_id) {
             if let Some(panel) = dashboard.panel_tabs.get_mut(&panel_id) {
-                if let Some(active_tab) = panel.tabs.get_mut(panel.active_tab) {
-                    if active_tab.content == content {
-                        return;
+                if let Some(tab) = panel.tabs.get_mut(tab_idx) {
+                    panel.active_tab = tab_idx;
+                    if tab.content != content {
+                        tab.content = content.clone();
+                        tab.title = content_title(&content);
                     }
-                    active_tab.content = content.clone();
-                    active_tab.title = content_title(&content);
-                    active_tab.id
+                    tab.id
                 } else {
                     return;
                 }
@@ -1412,16 +1767,52 @@ impl DashboardView {
 
         let cwd = self.dashboards.get(&dashboard_id).map(|d| d.current_dir.clone());
         self.ensure_content_entity(tab_id, content, cwd, window, cx);
+
+        if let Some(terminal) = self.terminals.get(&tab_id) {
+            terminal.update(cx, |m, _| {
+                m.needs_attention = false;
+                m.job_done = false;
+            });
+            let focus_handle = terminal.read(cx).focus_handle.clone();
+            window.on_next_frame(move |window, cx| {
+                window.focus(&focus_handle, cx);
+                crate::browser::restore_gpui_focus(window);
+            });
+        } else if let Some(editor) = self.editors.get(&tab_id) {
+            let focus_handle = editor.focus_handle(cx);
+            window.on_next_frame(move |window, cx| {
+                window.focus(&focus_handle, cx);
+                crate::browser::restore_gpui_focus(window);
+            });
+        }
+
         self.persist(cx);
         cx.notify();
     }
 
-    pub fn toggle_tab_menu(&mut self, panel_id: usize, tab_idx: usize, cx: &mut Context<Self>) {
-        if self.open_menu == Some((panel_id, tab_idx)) {
-            self.open_menu = None;
-        } else {
-            self.open_menu = Some((panel_id, tab_idx));
+    pub fn toggle_tab_menu(
+        &mut self,
+        dashboard_id: usize,
+        panel_id: usize,
+        tab_idx: usize,
+        tab_id: usize,
+        position: gpui::Point<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(ref menu) = self.open_menu {
+            if menu.panel_id == panel_id && menu.tab_idx == tab_idx {
+                self.open_menu = None;
+                cx.notify();
+                return;
+            }
         }
+        self.open_menu = Some(TabMenuState {
+            dashboard_id,
+            panel_id,
+            tab_idx,
+            tab_id,
+            position,
+        });
         cx.notify();
     }
 
@@ -1635,7 +2026,27 @@ impl DashboardView {
 
         let fh_click = focus_handle.clone();
 
-        let click_catcher = if self.open_menu.is_some() {
+        let has_menu_open_here = self.open_menu.as_ref().map_or(false, |menu| menu.panel_id == panel_id);
+        let any_menu_open = self.open_menu.is_some();
+
+        let panel_click_catcher = if any_menu_open && !has_menu_open_here {
+            Some(
+                div()
+                    .id(ElementId::Integer(2_900_000 + panel_id as u64))
+                    .absolute()
+                    .top(px(self.settings.layout.panel_header_height))
+                    .left_0()
+                    .size_full()
+                    .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+                        this.open_menu = None;
+                        cx.notify();
+                    }))
+            )
+        } else {
+            None
+        };
+
+        let header_click_catcher = if has_menu_open_here {
             Some(
                 div()
                     .id(ElementId::Integer(2_900_000 + panel_id as u64))
@@ -1694,6 +2105,10 @@ impl DashboardView {
                         &self.git_collapsed_paths,
                         &self.git_diff_scroll_handles,
                         &self.git_diff_div_scroll_handles,
+                        &self.lsp_diagnostics,
+                        &self.lsp_clients,
+                        &self.lsp_loading,
+                        &self.settings.lsp.servers,
                         &self.settings.terminal,
                         &self.settings.layout,
                         self.explorer_edit.as_ref(),
@@ -1701,14 +2116,15 @@ impl DashboardView {
                         cx,
                     ))
             )
-            .children(click_catcher)
+            .children(panel_click_catcher)
             .child(
                 div()
                     .absolute()
                     .top_0()
                     .left_0()
                     .w_full()
-                    .h(px(header_height))
+                    .h(if has_menu_open_here { gpui::relative(1.0) } else { gpui::DefiniteLength::from(px(header_height)) })
+                    .children(header_click_catcher)
                     .child(panel_header(
                         dashboard_id,
                         panel_id,
@@ -1716,10 +2132,11 @@ impl DashboardView {
                         can_close,
                         is_editor_on,
                         &self.settings.layout,
-                        self.open_menu,
+                        self.open_menu.as_ref(),
                         &self.terminals,
                         &self.editors,
                         &self.original_contents,
+                        &self.tab_scroll_handles,
                         cx,
                     ))
             )
@@ -2050,7 +2467,7 @@ impl DashboardView {
         status: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> usize {
         let mut found_dashboard_id = None;
         for (db_id, db) in &self.dashboards {
             if db.panel_tabs.contains_key(&panel_id) {
@@ -2058,7 +2475,7 @@ impl DashboardView {
                 break;
             }
         }
-        let Some(dashboard_id) = found_dashboard_id else { return; };
+        let Some(dashboard_id) = found_dashboard_id else { return 0; };
 
         let mut existing_tab_idx = None;
         if let Some(dashboard) = self.dashboards.get(&dashboard_id) {
@@ -2075,9 +2492,14 @@ impl DashboardView {
         }
 
         if let Some(idx) = existing_tab_idx {
+            let tab_id = if let Some(dashboard) = self.dashboards.get(&dashboard_id) {
+                dashboard.panel_tabs.get(&panel_id).map(|p| p.tabs[idx].id).unwrap_or(0)
+            } else {
+                0
+            };
             self.switch_panel_tab(dashboard_id, panel_id, idx, window, cx);
             cx.notify();
-            return;
+            return tab_id;
         }
 
         let tab_id = self.next_id;
@@ -2095,52 +2517,13 @@ impl DashboardView {
             }
         });
 
-        let (editor, content_str) = if is_diff {
-            let status_str = status.clone().unwrap_or_default();
-            let diff_content = self.get_file_diff(&path, &status_str, &cwd);
-            let ed = cx.new(|cx| {
-                let mut e = InputState::new(window, cx)
-                    .multi_line(true)
-                    .code_editor("diff")
-                    .line_number(true)
-                    .disabled(true);
-                e.set_value(diff_content, window, cx);
-                e
-            });
-            (ed, None)
-        } else {
-            let content = std::fs::read_to_string(&path).unwrap_or_default();
-            let lang = detect_language(&path);
-            let ed = cx.new(|cx| {
-                let mut e = InputState::new(window, cx)
-                    .multi_line(true)
-                    .code_editor(lang)
-                    .line_number(true);
-                e.set_value(content.clone(), window, cx);
-                e
-            });
-            (ed, Some(content))
-        };
-
-        self.editors.insert(tab_id, editor.clone());
-        if let Some(content) = content_str {
-            self.original_contents.insert(tab_id, content);
-        }
-
-        let sub = cx.subscribe(&editor, move |_this, _editor, event, cx| {
-            if let gpui_component::input::InputEvent::Change = event {
-                cx.notify();
-            }
-        });
-        self.editor_subscriptions.insert(tab_id, sub);
-
         let new_tab = PanelTab {
             id: tab_id,
             title,
             content: PanelContent::Editor {
-                path,
+                path: path.clone(),
                 is_diff,
-                status,
+                status: status.clone(),
             },
         };
 
@@ -2151,14 +2534,20 @@ impl DashboardView {
             }
         }
 
-        let focus_handle = editor.focus_handle(cx);
-        window.on_next_frame(move |window, cx| {
-            window.focus(&focus_handle, cx);
-            crate::browser::restore_gpui_focus(window);
-        });
+        let content = PanelContent::Editor { path, is_diff, status };
+        self.ensure_content_entity(tab_id, content, Some(cwd), window, cx);
+
+        if let Some(editor) = self.editors.get(&tab_id) {
+            let focus_handle = editor.focus_handle(cx);
+            window.on_next_frame(move |window, cx| {
+                window.focus(&focus_handle, cx);
+                crate::browser::restore_gpui_focus(window);
+            });
+        }
 
         self.persist(cx);
         cx.notify();
+        tab_id
     }
 
     pub fn toggle_git_dir(&mut self, tab_id: usize, path: PathBuf, cx: &mut Context<Self>) {
@@ -2194,6 +2583,18 @@ impl DashboardView {
                     }
                 }
             }
+
+            // Send textDocument/didSave notification to active LSP clients
+            if let Ok(uri) = crate::lsp::path_to_uri(path) {
+                for client in self.lsp_clients.values() {
+                    let params = lsp_types::DidSaveTextDocumentParams {
+                        text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+                        text: None,
+                    };
+                    let _ = client.send_notification("textDocument/didSave", params);
+                }
+            }
+
             cx.notify();
         }
     }
@@ -2226,6 +2627,56 @@ impl DashboardView {
             ("All files saved".to_string(), theme.muted_foreground)
         } else {
             (format!("Unsaved changes: {}", modified_files.join(", ")), rgb(0xcca700).into())
+        };
+
+        let active_db = self.active_dashboard();
+        let mut lsp_statuses = Vec::new();
+        if let Some(dashboard) = active_db {
+            let mut matched_clients: Vec<(&String, &std::sync::Arc<crate::lsp::LspClient>)> = self.lsp_clients
+                .iter()
+                .filter(|((workspace_root, _), _)| {
+                    paths_match(workspace_root, &dashboard.current_dir)
+                })
+                .map(|((_, name), client)| (name, client))
+                .collect();
+            matched_clients.sort_by_key(|(name, _)| *name);
+
+            for (server_name, client) in matched_clients {
+                let status = client.status();
+                lsp_statuses.push((server_name.clone(), status));
+            }
+        }
+
+        let lsp_el = if !lsp_statuses.is_empty() {
+            let mut container = div().flex().items_center().gap_3().mr_4();
+            for (name, status) in lsp_statuses {
+                let color = if status == "Running" {
+                    rgb(0x57c994)
+                } else {
+                    rgb(0xf47067)
+                };
+                container = container.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .child(
+                            div()
+                                .w(px(5.))
+                                .h(px(5.))
+                                .rounded_full()
+                                .bg(color)
+                        )
+                        .child(
+                            div()
+                                .text_color(theme.muted_foreground)
+                                .child(format!("{}: {}", name, status))
+                        )
+                );
+            }
+            Some(container)
+        } else {
+            None
         };
 
         div()
@@ -2268,8 +2719,14 @@ impl DashboardView {
             )
             .child(
                 div()
-                    .text_color(theme.muted_foreground)
-                    .child("Ghost-mux")
+                    .flex()
+                    .items_center()
+                    .children(lsp_el)
+                    .child(
+                        div()
+                            .text_color(theme.muted_foreground)
+                            .child("Ghost-mux")
+                    )
             )
             .into_any_element()
     }
@@ -2550,6 +3007,170 @@ impl Render for DashboardView {
             root = root.child(catcher).child(menu_div);
         }
 
+        if let Some(ref menu) = self.open_menu {
+            let theme = cx.theme();
+            let position = menu.position;
+            let dashboard_id = menu.dashboard_id;
+            let panel_id = menu.panel_id;
+            let idx = menu.tab_idx;
+            let tab_id = menu.tab_id;
+            
+            // Build the menu items
+            let window_size = window.bounds().size;
+            let menu_width = px(120.);
+            let menu_height = px(150.);
+            
+            let mut left_pos = position.x;
+            if left_pos + menu_width > window_size.width {
+                left_pos = window_size.width - menu_width;
+            }
+            if left_pos < px(0.) {
+                left_pos = px(0.);
+            }
+            
+            let mut top_pos = position.y;
+            if top_pos + menu_height > window_size.height {
+                top_pos = window_size.height - menu_height;
+            }
+            if top_pos < px(0.) {
+                top_pos = px(0.);
+            }
+            
+            let menu_div = div()
+                .absolute()
+                .top(top_pos)
+                .left(left_pos)
+                .bg(theme.background)
+                .border_1()
+                .border_color(theme.border)
+                .rounded_sm()
+                .p_1()
+                .min_w(px(120.))
+                .flex()
+                .flex_col()
+                .shadow_md()
+                .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                    cx.stop_propagation();
+                })
+                .on_mouse_down(MouseButton::Right, |_, _, cx| {
+                    cx.stop_propagation();
+                })
+                .child(
+                    dropdown_item(
+                        ElementId::Integer(2_300_000 + tab_id as u64 * 10 + 1),
+                        "Terminal",
+                        cx.listener(move |this, _: &ClickEvent, window, cx| {
+                            this.open_menu = None;
+                            this.set_panel_tab_content(dashboard_id, panel_id, idx, PanelContent::Terminal, window, cx);
+                        }),
+                        theme
+                    )
+                )
+                .child(
+                    dropdown_item(
+                        ElementId::Integer(2_300_000 + tab_id as u64 * 10 + 2),
+                        "Explorer",
+                        cx.listener(move |this, _: &ClickEvent, window, cx| {
+                            this.open_menu = None;
+                            this.set_panel_tab_content(dashboard_id, panel_id, idx, PanelContent::FileExplorer, window, cx);
+                        }),
+                        theme
+                    )
+                )
+                .child(
+                    dropdown_item(
+                        ElementId::Integer(2_300_000 + tab_id as u64 * 10 + 3),
+                        "Git",
+                        cx.listener(move |this, _: &ClickEvent, window, cx| {
+                            this.open_menu = None;
+                            this.set_panel_tab_content(dashboard_id, panel_id, idx, PanelContent::Git, window, cx);
+                        }),
+                        theme
+                    )
+                )
+                .child(
+                    dropdown_item(
+                        ElementId::Integer(2_300_000 + tab_id as u64 * 10 + 4),
+                        "Browser",
+                        cx.listener(move |this, _: &ClickEvent, window, cx| {
+                            this.open_menu = None;
+                            this.set_panel_tab_content(
+                                dashboard_id,
+                                panel_id,
+                                idx,
+                                PanelContent::Browser { url: "https://google.com".to_string() },
+                                window,
+                                cx
+                            );
+                        }),
+                        theme
+                    )
+                )
+                .child(
+                    dropdown_item(
+                        ElementId::Integer(2_300_000 + tab_id as u64 * 10 + 5),
+                        "Editor",
+                        cx.listener(move |this, _: &ClickEvent, window, cx| {
+                            this.open_menu = None;
+                            let path = if let Some(dashboard) = this.dashboards.get(&dashboard_id) {
+                                dashboard.current_dir.join("Untitled.txt")
+                            } else {
+                                std::path::PathBuf::from("Untitled.txt")
+                            };
+                            this.set_panel_tab_content(
+                                dashboard_id,
+                                panel_id,
+                                idx,
+                                PanelContent::Editor {
+                                    path,
+                                    is_diff: false,
+                                    status: None,
+                                },
+                                window,
+                                cx
+                            );
+                        }),
+                        theme
+                    )
+                )
+                .child(
+                    dropdown_item(
+                        ElementId::Integer(2_300_000 + tab_id as u64 * 10 + 6),
+                        "Diagnostics",
+                        cx.listener(move |this, _: &ClickEvent, window, cx| {
+                            this.open_menu = None;
+                            this.set_panel_tab_content(
+                                dashboard_id,
+                                panel_id,
+                                idx,
+                                PanelContent::Diagnostics,
+                                window,
+                                cx
+                            );
+                        }),
+                        theme
+                    )
+                );
+                
+            let catcher = div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .on_mouse_down(MouseButton::Left, cx.listener(|this, _: &MouseDownEvent, _window, cx| {
+                    this.open_menu = None;
+                    cx.stop_propagation();
+                    cx.notify();
+                }))
+                .on_mouse_down(MouseButton::Right, cx.listener(|this, _: &MouseDownEvent, _window, cx| {
+                    this.open_menu = None;
+                    cx.stop_propagation();
+                    cx.notify();
+                }));
+                
+            root = root.child(catcher).child(menu_div);
+        }
+
         root.into_any()
     }
 }
@@ -2713,8 +3334,8 @@ fn dashboard_sidebar(view: &DashboardView, cx: &mut Context<DashboardView>) -> A
                 .hover(|s| s.bg(theme.muted).text_color(theme.foreground))
                 .on_click(cx.listener({
                     let dashboard_id = dashboard.id;
-                    move |this, _: &ClickEvent, _window, cx| {
-                        this.switch_dashboard(dashboard_id, cx);
+                    move |this, _: &ClickEvent, window, cx| {
+                        this.switch_dashboard(dashboard_id, window, cx);
                     }
                 }))
                 .child(
@@ -2750,7 +3371,7 @@ fn dashboard_sidebar(view: &DashboardView, cx: &mut Context<DashboardView>) -> A
                         ),
                 );
 
-            if can_remove_dashboard {
+            let row = if can_remove_dashboard {
                 row.child(
                     div()
                         .id(ElementId::Integer(1_200_000 + dashboard.id as u64))
@@ -2772,8 +3393,66 @@ fn dashboard_sidebar(view: &DashboardView, cx: &mut Context<DashboardView>) -> A
                 )
             } else {
                 row
-            }
-            .into_any_element()
+            };
+
+            let mut matched_clients: Vec<(&String, &std::sync::Arc<crate::lsp::LspClient>)> = view.lsp_clients
+                .iter()
+                .filter(|((workspace_root, _), _)| {
+                    paths_match(workspace_root, &dashboard.current_dir)
+                })
+                .map(|((_, name), client)| (name, client))
+                .collect();
+            matched_clients.sort_by_key(|(name, _)| *name);
+
+            let lsp_rows: Vec<AnyElement> = matched_clients
+                .into_iter()
+                .map(|(server_name, client)| {
+                    let status = client.status();
+                    let pid_str = client.pid().map(|p| format!(" (PID {})", p)).unwrap_or_default();
+                    let status_color = if status == "Running" {
+                        rgb(0x57c994)
+                    } else {
+                        rgb(0xf47067)
+                    };
+
+                    div()
+                        .w_full()
+                        .pl(px(16.))
+                        .h(px(16.))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .text_size(px(10.))
+                        .text_color(theme.muted_foreground)
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap_1()
+                                .child(Icon::new(IconName::Cpu).size_3().text_color(theme.muted_foreground))
+                                .child(
+                                    div()
+                                        .font_semibold()
+                                        .child(server_name.clone())
+                                )
+                                .child(
+                                    div()
+                                        .text_color(status_color)
+                                        .child(format!(": {status}{pid_str}"))
+                                )
+                        )
+                        .into_any_element()
+                })
+                .collect();
+
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(row)
+                .children(lsp_rows)
+                .into_any_element()
         });
 
     let mut terminal_tabs: Vec<usize> = view.terminals.keys().copied().collect();
@@ -3522,10 +4201,11 @@ fn panel_header(
     can_close: bool,
     is_editor_on: bool,
     settings: &LayoutSettings,
-    open_menu: Option<(usize, usize)>,
+    open_menu: Option<&TabMenuState>,
     terminals: &HashMap<usize, Entity<TerminalModel>>,
     editors: &HashMap<usize, Entity<InputState>>,
     original_contents: &HashMap<usize, String>,
+    tab_scroll_handles: &std::cell::RefCell<HashMap<usize, gpui::ScrollHandle>>,
     cx: &mut Context<DashboardView>,
 ) -> AnyElement {
     let theme = cx.theme();
@@ -3576,9 +4256,10 @@ fn panel_header(
                         name
                     }
                 }
+                PanelContent::Diagnostics => "diagnostics".to_string(),
             };
 
-            let is_menu_open = open_menu == Some((panel_id, idx));
+            let _is_menu_open = open_menu.map_or(false, |menu| menu.panel_id == panel_id && menu.tab_idx == idx);
 
             let tab_needs_attention = match &tab.content {
                 PanelContent::Terminal => {
@@ -3683,8 +4364,9 @@ fn panel_header(
                 .children(tab_spinner)
                 .children(tab_done_badge);
 
+            let tab_id = tab.id;
             let menu_btn = div()
-                .id(ElementId::Integer(2_200_000 + tab.id as u64))
+                .id(ElementId::Integer(2_200_000 + tab_id as u64))
                 .h(px(settings.panel_tab_close_height))
                 .w(px(settings.panel_tab_close_width))
                 .rounded_sm()
@@ -3694,8 +4376,8 @@ fn panel_header(
                 .cursor_pointer()
                 .text_color(theme.muted_foreground)
                 .hover(|s| s.bg(theme.muted).text_color(theme.foreground))
-                .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
-                    this.toggle_tab_menu(panel_id, idx, cx);
+                .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, _window, cx| {
+                    this.toggle_tab_menu(dashboard_id, panel_id, idx, tab_id, event.position, cx);
                 }))
                 .child(Icon::new(IconName::Menu).size_3());
 
@@ -3737,79 +4419,7 @@ fn panel_header(
                     .child(div().w(px(2.)));
             }
 
-            div()
-                .relative()
-                .child(tab_el)
-                .children(if is_menu_open {
-                    Some(
-                        div()
-                            .absolute()
-                            .top_full()
-                            .left_0()
-                            .bg(theme.background)
-                            .border_1()
-                            .border_color(theme.border)
-                            .rounded_sm()
-                            .p_1()
-                            .min_w(px(100.))
-                            .flex()
-                            .flex_col()
-                            .shadow_md()
-                            .child(
-                                dropdown_item(
-                                    ElementId::Integer(2_300_000 + tab.id as u64 * 10 + 1),
-                                    "Terminal",
-                                    cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                        this.open_menu = None;
-                                        this.set_panel_tab_content(dashboard_id, panel_id, PanelContent::Terminal, window, cx);
-                                    }),
-                                    theme
-                                )
-                            )
-                            .child(
-                                dropdown_item(
-                                    ElementId::Integer(2_300_000 + tab.id as u64 * 10 + 2),
-                                    "Explorer",
-                                    cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                        this.open_menu = None;
-                                        this.set_panel_tab_content(dashboard_id, panel_id, PanelContent::FileExplorer, window, cx);
-                                    }),
-                                    theme
-                                )
-                            )
-                            .child(
-                                dropdown_item(
-                                    ElementId::Integer(2_300_000 + tab.id as u64 * 10 + 3),
-                                    "Git",
-                                    cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                        this.open_menu = None;
-                                        this.set_panel_tab_content(dashboard_id, panel_id, PanelContent::Git, window, cx);
-                                    }),
-                                    theme
-                                )
-                            )
-                            .child(
-                                dropdown_item(
-                                    ElementId::Integer(2_300_000 + tab.id as u64 * 10 + 4),
-                                    "Browser",
-                                    cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                        this.open_menu = None;
-                                        this.set_panel_tab_content(
-                                            dashboard_id,
-                                            panel_id,
-                                            PanelContent::Browser { url: "https://google.com".to_string() },
-                                            window,
-                                            cx
-                                        );
-                                    }),
-                                    theme
-                                )
-                            )
-                    )
-                } else {
-                    None
-                })
-                .into_any_element()
+            tab_el.into_any_element()
         })
         .collect();
 
@@ -3866,6 +4476,24 @@ fn panel_header(
         }),
     );
 
+    let tab_scroll_handle = tab_scroll_handles
+        .borrow_mut()
+        .entry(panel_id)
+        .or_insert_with(gpui::ScrollHandle::new)
+        .clone();
+
+    let tab_container = div()
+        .id(ElementId::Integer(2_500_000 + panel_id as u64))
+        .h_full()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_px()
+        .flex_shrink()
+        .overflow_x_scroll()
+        .track_scroll(&tab_scroll_handle)
+        .children(tab_buttons);
+
     div()
         .w_full()
         .h(px(settings.panel_header_height))
@@ -3877,7 +4505,7 @@ fn panel_header(
         .items_center()
         .px_2()
         .gap_px()
-        .children(tab_buttons)
+        .child(tab_container)
         .child(add_panel_tab_btn)
         .child(div().flex_1())
         .child(editor_toggle)
@@ -4128,6 +4756,37 @@ fn detect_language(path: &std::path::Path) -> &'static str {
         Some("sh") => "shell",
         _ => "text",
     }
+}
+
+fn has_extension(dir: &Path, ext: &str) -> bool {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some(ext) {
+                return true;
+            }
+            if path.is_dir() {
+                if let Ok(sub_entries) = std::fs::read_dir(path) {
+                    for sub_entry in sub_entries.flatten() {
+                        let sub_path = sub_entry.path();
+                        if sub_path.is_file() && sub_path.extension().and_then(|e| e.to_str()) == Some(ext) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+fn paths_match(p1: &Path, p2: &Path) -> bool {
+    if p1 == p2 || p1.starts_with(p2) || p2.starts_with(p1) {
+        return true;
+    }
+    let c1 = std::fs::canonicalize(p1).unwrap_or_else(|_| p1.to_path_buf());
+    let c2 = std::fs::canonicalize(p2).unwrap_or_else(|_| p2.to_path_buf());
+    c1 == c2 || c1.starts_with(&c2) || c2.starts_with(&c1)
 }
 
 fn is_path_modified(
@@ -4510,6 +5169,10 @@ fn render_panel_content(
     git_collapsed_paths: &HashMap<usize, std::collections::HashSet<PathBuf>>,
     git_diff_scroll_handles: &std::cell::RefCell<HashMap<usize, UniformListScrollHandle>>,
     git_diff_div_scroll_handles: &std::cell::RefCell<HashMap<usize, gpui::ScrollHandle>>,
+    lsp_diagnostics: &HashMap<PathBuf, Vec<lsp_types::Diagnostic>>,
+    lsp_clients: &HashMap<(PathBuf, String), std::sync::Arc<crate::lsp::LspClient>>,
+    lsp_loading: &HashMap<PathBuf, bool>,
+    lsp_servers: &HashMap<String, Vec<String>>,
     terminal_settings: &TerminalSettings,
     layout_settings: &LayoutSettings,
     explorer_edit: Option<&ExplorerEditState>,
@@ -4677,6 +5340,390 @@ fn render_panel_content(
                 div().flex_1().child("No browser state").into_any_element()
             }
         }
+        PanelContent::Diagnostics => {
+            render_diagnostics_panel(
+                panel_id,
+                dashboard_id,
+                dashboard_cwd,
+                lsp_diagnostics,
+                lsp_clients,
+                lsp_loading,
+                lsp_servers,
+                layout_settings,
+                window,
+                cx,
+            )
+        }
+    }
+}
+
+fn render_diagnostics_panel(
+    panel_id: usize,
+    dashboard_id: usize,
+    dashboard_cwd: PathBuf,
+    lsp_diagnostics: &HashMap<PathBuf, Vec<lsp_types::Diagnostic>>,
+    lsp_clients: &HashMap<(PathBuf, String), std::sync::Arc<crate::lsp::LspClient>>,
+    lsp_loading: &HashMap<PathBuf, bool>,
+    lsp_servers: &HashMap<String, Vec<String>>,
+    _layout_settings: &LayoutSettings,
+    _window: &mut Window,
+    cx: &mut Context<DashboardView>,
+) -> AnyElement {
+    let theme = cx.theme();
+    let diagnostics_map = lsp_diagnostics;
+
+    // Detect relevant languages for this workspace
+    let mut relevant_langs = std::collections::HashSet::new();
+    if dashboard_cwd.join("Cargo.toml").exists() || has_extension(&dashboard_cwd, "rs") {
+        relevant_langs.insert("rust".to_string());
+    }
+    if dashboard_cwd.join("package.json").exists() || dashboard_cwd.join("tsconfig.json").exists() || has_extension(&dashboard_cwd, "ts") || has_extension(&dashboard_cwd, "js") {
+        relevant_langs.insert("typescript".to_string());
+        relevant_langs.insert("javascript".to_string());
+        relevant_langs.insert("tailwind".to_string());
+    }
+    if dashboard_cwd.join("requirements.txt").exists() || dashboard_cwd.join("pyproject.toml").exists() || has_extension(&dashboard_cwd, "py") {
+        relevant_langs.insert("python".to_string());
+    }
+    if has_extension(&dashboard_cwd, "html") {
+        relevant_langs.insert("html".to_string());
+        relevant_langs.insert("tailwind".to_string());
+    }
+    if has_extension(&dashboard_cwd, "css") {
+        relevant_langs.insert("css".to_string());
+        relevant_langs.insert("tailwind".to_string());
+    }
+
+    // Check loading state of any file or any starting client
+    let any_file_loading = lsp_loading.iter().any(|(path, &loading)| {
+        if !loading {
+            return false;
+        }
+        if path.starts_with(&dashboard_cwd) {
+            true
+        } else {
+            let c_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+            let c_cwd = std::fs::canonicalize(&dashboard_cwd).unwrap_or_else(|_| dashboard_cwd.to_path_buf());
+            c_path.starts_with(&c_cwd)
+        }
+    });
+
+    let mut matched_clients: Vec<(&String, &std::sync::Arc<crate::lsp::LspClient>)> = lsp_clients
+        .iter()
+        .filter(|((workspace_root, _), _)| {
+            paths_match(workspace_root, &dashboard_cwd)
+        })
+        .map(|((_, name), client)| (name, client))
+        .collect();
+    matched_clients.sort_by_key(|(name, _)| *name);
+
+    let any_client_initializing = matched_clients.iter().any(|(_, client)| {
+        client.status() == "Running" && !client.is_initialized()
+    });
+
+    let is_loading = any_file_loading || any_client_initializing;
+
+    // List all configured servers, sorting recommended/relevant ones to the top
+    let mut all_servers: Vec<String> = lsp_servers.keys().cloned().collect();
+    all_servers.sort_by(|a, b| {
+        let a_rel = relevant_langs.contains(a);
+        let b_rel = relevant_langs.contains(b);
+        if a_rel == b_rel {
+            a.cmp(b)
+        } else if a_rel {
+            std::cmp::Ordering::Less
+        } else {
+            std::cmp::Ordering::Greater
+        }
+    });
+
+    let mut server_items = vec![];
+    for lang in all_servers {
+        let is_relevant = relevant_langs.contains(&lang);
+        let key = (dashboard_cwd.clone(), lang.clone());
+        let client = lsp_clients.get(&key);
+
+        let (status_str, color, can_start) = match client {
+            Some(c) => {
+                let status = c.status();
+                if status == "Running" {
+                    if !c.is_initialized() {
+                        ("Initializing...".to_string(), rgb(0xdc8621), false)
+                    } else {
+                        (format!("Running (PID {})", c.pid().unwrap_or(0)), rgb(0x57c994), false)
+                    }
+                } else if status.starts_with("Failed") || status.starts_with("Exited") {
+                    (status, rgb(0xf47067), true)
+                } else {
+                    (status, rgb(0xf47067), true)
+                }
+            }
+            None => ("Not started".to_string(), theme.muted_foreground.into(), true),
+        };
+
+        let start_button = if can_start {
+            let lang_clone = lang.clone();
+            Some(
+                div()
+                    .id(ElementId::Name(format!("start-lsp-{}-{}", lang, panel_id).into()))
+                    .px_2()
+                    .py_0p5()
+                    .rounded_sm()
+                    .bg(theme.accent)
+                    .text_color(theme.foreground)
+                    .cursor_pointer()
+                    .hover(|s| s.bg(theme.muted))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        this.start_lsp_server(dashboard_id, &lang_clone, window, cx);
+                    }))
+                    .child("Start")
+            )
+        } else {
+            None
+        };
+
+        server_items.push(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .w_full()
+                .py_1()
+                .border_b_1()
+                .border_color(theme.border)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .w(px(6.))
+                                .h(px(6.))
+                                .rounded_full()
+                                .bg(color)
+                        )
+                        .child(
+                            div()
+                                .text_color(theme.foreground)
+                                .font_semibold()
+                                .child(lang.clone())
+                        )
+                        .children(
+                            if is_relevant {
+                                Some(
+                                    div()
+                                        .text_size(px(9.))
+                                        .text_color(theme.muted_foreground)
+                                        .bg(theme.muted)
+                                        .px_1()
+                                        .rounded_sm()
+                                        .child("recommended")
+                                )
+                            } else {
+                                None
+                            }
+                        )
+                        .child(
+                            div()
+                                .text_color(theme.muted_foreground)
+                                .child(format!(" - {}", status_str))
+                        )
+                )
+                .children(start_button)
+        );
+    }
+
+    let lsp_status_bar = Some(
+        div()
+            .w_full()
+            .bg(theme.secondary)
+            .border_b_1()
+            .border_color(theme.border)
+            .flex()
+            .flex_col()
+            .px_3()
+            .py_2()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .w_full()
+                    .pb_1p5()
+                    .child(
+                        div()
+                            .text_color(theme.foreground)
+                            .font_bold()
+                            .text_xs()
+                            .child("LSP Server Management")
+                    )
+                    .children(
+                        if is_loading {
+                            Some(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .text_size(px(9.))
+                                            .text_color(theme.muted_foreground)
+                                            .child("Updating...")
+                                    )
+                                    .child(gpui_component::spinner::Spinner::new().xsmall())
+                            )
+                        } else {
+                            None
+                        }
+                    )
+            )
+            .child(
+                div()
+                    .flex_col()
+                    .gap_1()
+                    .children(server_items)
+            )
+    );
+
+    let mut items = vec![];
+    for (path, diags) in diagnostics_map {
+        let belongs_to_dashboard = if path.starts_with(&dashboard_cwd) {
+            true
+        } else {
+            let c_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+            let c_cwd = std::fs::canonicalize(&dashboard_cwd).unwrap_or_else(|_| dashboard_cwd.to_path_buf());
+            c_path.starts_with(&c_cwd)
+        };
+        if !belongs_to_dashboard {
+            continue;
+        }
+        if diags.is_empty() {
+            continue;
+        }
+
+        let relative_path = path.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.to_string_lossy().to_string());
+
+        items.push(
+            div()
+                .w_full()
+                .px_3()
+                .py_1()
+                .bg(theme.secondary)
+                .border_y_1()
+                .border_color(theme.border)
+                .text_xs()
+                .font_bold()
+                .text_color(theme.muted_foreground)
+                .child(format!("File: {}", relative_path))
+                .into_any_element()
+        );
+
+        for diag in diags {
+            let severity_str = match diag.severity {
+                Some(lsp_types::DiagnosticSeverity::ERROR) => "ERROR",
+                Some(lsp_types::DiagnosticSeverity::WARNING) => "WARNING",
+                Some(lsp_types::DiagnosticSeverity::INFORMATION) => "INFO",
+                Some(lsp_types::DiagnosticSeverity::HINT) => "HINT",
+                _ => "INFO",
+            };
+
+            let color = match diag.severity {
+                Some(lsp_types::DiagnosticSeverity::ERROR) => rgb(0xf47067),
+                Some(lsp_types::DiagnosticSeverity::WARNING) => rgb(0xdc8621),
+                _ => theme.muted_foreground.into(),
+            };
+
+            let line = diag.range.start.line + 1;
+            let col = diag.range.start.character + 1;
+            let message = diag.message.clone();
+            let path_clone = path.clone();
+            let range = diag.range;
+
+            items.push(
+                div()
+                    .id(ElementId::Name(format!("diag-{panel_id}-{relative_path}-{line}-{col}-{severity_str}").into()))
+                    .w_full()
+                    .px_4()
+                    .py_1p5()
+                    .cursor_pointer()
+                    .hover(|s| s.bg(theme.muted))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        let tab_id = this.open_file_in_panel(panel_id, path_clone.clone(), false, None, window, cx);
+                        if let Some(editor) = this.editors.get(&tab_id) {
+                            editor.update(cx, |editor, cx| {
+                                let start = editor.text().position_to_offset(&range.start);
+                                  let end = editor.text().position_to_offset(&range.end);
+                                editor.select_text_range(start..end, cx);
+                                editor.scroll_to_offset(start, cx);
+                            });
+                        }
+                    }))
+                    .flex()
+                    .flex_row()
+                    .items_start()
+                    .gap_3()
+                    .child(
+                        div()
+                            .text_color(color)
+                            .text_xs()
+                            .font_bold()
+                            .child(severity_str)
+                    )
+                    .child(
+                        div()
+                            .text_color(theme.muted_foreground)
+                            .text_xs()
+                            .child(format!("{line}:{col}"))
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_xs()
+                            .text_color(theme.foreground)
+                            .child(message)
+                    )
+                    .into_any_element()
+            );
+        }
+    }
+
+    if items.is_empty() {
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .children(lsp_status_bar)
+            .child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_color(theme.muted_foreground)
+                    .text_xs()
+                    .child("No diagnostics found")
+            )
+            .into_any_element()
+    } else {
+        div()
+            .id(ElementId::Name(format!("diagnostics-container-{}", panel_id).into()))
+            .size_full()
+            .flex()
+            .flex_col()
+            .children(lsp_status_bar)
+            .child(
+                div()
+                    .id(ElementId::Name(format!("diagnostics-list-{}", panel_id).into()))
+                    .flex_1()
+                    .overflow_y_scroll()
+                    .flex()
+                    .flex_col()
+                    .children(items)
+            )
+            .into_any_element()
     }
 }
 
@@ -5469,6 +6516,83 @@ fn render_terminal(
         })
         .child(list);
 
+    let scrollbar = if let Some(sb) = term.read(cx).scrollbar_info() {
+        if sb.total > sb.len {
+            let total = sb.total as f32;
+            let offset = sb.offset as f32;
+            let len = sb.len as f32;
+
+            let thumb_height_pct = (len / total).max(0.05);
+            let scrollable_ratio = if total > len {
+                offset / (total - len)
+            } else {
+                0.0
+            };
+            let thumb_top_pct = scrollable_ratio * (1.0 - thumb_height_pct);
+
+            let term_scroll = term.clone();
+            let term_move = term.clone();
+
+            Some(
+                div()
+                    .absolute()
+                    .top_0()
+                    .right_0()
+                    .bottom_0()
+                    .w(px(10.0))
+                    .bg(cx.theme().secondary.alpha(0.1))
+                    .on_mouse_down(MouseButton::Left, move |event, _window, cx| {
+                        term_scroll.update(cx, |m, inner_cx| {
+                            if let Some(bounds) = &m.viewport_bounds {
+                                let relative_y = event.position.y - bounds.origin.y;
+                                let ratio = (relative_y.as_f32() / bounds.size.height.as_f32()).clamp(0.0, 1.0);
+                                if let Ok(sb) = m.terminal.scrollbar() {
+                                    let target_offset = (ratio * (sb.total - sb.len) as f32).round() as u64;
+                                    let delta = target_offset as isize - sb.offset as isize;
+                                    if delta != 0 {
+                                        m.scroll_by_lines(delta);
+                                        inner_cx.notify();
+                                    }
+                                }
+                            }
+                        });
+                    })
+                    .on_mouse_move(move |event, _window, cx| {
+                        if event.dragging() {
+                            term_move.update(cx, |m, inner_cx| {
+                                if let Some(bounds) = &m.viewport_bounds {
+                                    let relative_y = event.position.y - bounds.origin.y;
+                                    let ratio = (relative_y.as_f32() / bounds.size.height.as_f32()).clamp(0.0, 1.0);
+                                    if let Ok(sb) = m.terminal.scrollbar() {
+                                        let target_offset = (ratio * (sb.total - sb.len) as f32).round() as u64;
+                                        let delta = target_offset as isize - sb.offset as isize;
+                                        if delta != 0 {
+                                            m.scroll_by_lines(delta);
+                                            inner_cx.notify();
+                                        }
+                                    }
+                                }
+                            });
+                        }
+                    })
+                    .child(
+                        div()
+                            .w_full()
+                            .h(relative(thumb_height_pct))
+                            .mt(relative(thumb_top_pct))
+                            .rounded(cx.theme().radius)
+                            .bg(cx.theme().muted_foreground.alpha(0.3))
+                            .hover(|s| s.bg(cx.theme().muted_foreground.alpha(0.5)))
+                    )
+                    .into_any_element()
+            )
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     let term_for_resize = term.clone();
     let terminal_display = div()
         .on_children_prepainted(move |child_bounds, _window, cx| {
@@ -5497,7 +6621,8 @@ fn render_terminal(
         .flex_1()
         .min_h_0()
         .relative()
-        .child(inner);
+        .child(inner)
+        .children(scrollbar);
 
     div()
         .id(ElementId::Integer(id as u64 * 100 + 59))
@@ -6486,6 +7611,7 @@ fn content_title(content: &PanelContent) -> String {
                 name
             }
         }
+        PanelContent::Diagnostics => "diagnostics".to_string(),
     }
 }
 

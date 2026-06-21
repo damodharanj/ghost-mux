@@ -2,6 +2,7 @@ mod browser;
 mod dashboard;
 mod hook_server;
 mod layout;
+mod lsp;
 mod persist;
 mod settings;
 mod terminal;
