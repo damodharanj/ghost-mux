@@ -12,7 +12,7 @@ if [[ -z "${CARGO_BIN:-}" ]]; then
   exit 1
 fi
 
-BIN_NAME="$(awk -F'"' '/^name[[:space:]]*=[[:space:]]*"/ { print $2; exit }' "$PROJECT_ROOT/Cargo.toml")"
+BIN_NAME="$(awk -F'"' '/^name[[:space:]]*=[[:space:]]*"/ { print $2; exit }' "$PROJECT_ROOT/Cargo.toml" | tr -d '\r')"
 if [[ -z "$BIN_NAME" ]]; then
   echo "error: unable to read binary name from Cargo.toml" >&2
   exit 1

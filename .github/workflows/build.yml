@@ -22,7 +22,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            artifact_name: ghost-mux-linux-x86_64.tar.gz
+          - os: macos-latest
+            artifact_name: ghost-mux-macos-arm64.tar.gz
+          - os: windows-latest
+            artifact_name: ghost-mux-windows-x86_64.zip
 
     steps:
       - name: Checkout repository
@@ -145,10 +151,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ghost-mux-${{ matrix.os }}
-          path: |
-            ghost-mux-linux-x86_64.tar.gz
-            ghost-mux-macos-arm64.tar.gz
-            ghost-mux-windows-x86_64.zip
+          path: ${{ matrix.artifact_name }}
           if-no-files-found: error
 
   release:
