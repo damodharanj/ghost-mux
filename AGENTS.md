@@ -6,18 +6,18 @@ Ghost-mux is a GPUI-based desktop **dashboard builder**. The app starts with a s
 
 ## Design Reference
 
-- Theme, colors, and font reference image: `assets/design/reference-theme.png`
+- Theme, colors, and font reference image: [assets/design/reference-theme1.png](file:///Users/saranyadamo/Downloads/ghost-mux/assets/design/reference-theme1.png)
 - Preview:
 
-![Ghost-mux design reference](assets/design/reference-theme.png)
+![Ghost-mux design reference](file:///Users/saranyadamo/Downloads/ghost-mux/assets/design/reference-theme1.png)
 
 ---
 
 ## Architecture
 
-### Layout Tree (`PanelLayout`)
+### Layout Tree ([PanelLayout](file:///Users/saranyadamo/Downloads/ghost-mux/src/layout.rs#L8))
 
-The entire UI is represented as a **binary tree** stored in `DashboardView`:
+The entire UI is represented as a **binary tree** stored via [DashboardState::layout](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L48) inside [DashboardView](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L234):
 
 ```
 Leaf(id)                     — a single panel with content
@@ -25,29 +25,45 @@ HSplit { left, right, id }   — two panels side-by-side (resizable)
 VSplit { top, bottom, id }   — two panels stacked (resizable)
 ```
 
-Every node has a unique `usize` ID managed by `DashboardView::next_id`.
+- [Leaf](file:///Users/saranyadamo/Downloads/ghost-mux/src/layout.rs#L9): a single panel with content.
+- [HSplit](file:///Users/saranyadamo/Downloads/ghost-mux/src/layout.rs#L10): two panels side-by-side (resizable).
+- [VSplit](file:///Users/saranyadamo/Downloads/ghost-mux/src/layout.rs#L15): two panels stacked (resizable).
 
-### State — `DashboardView`
+Every node has a unique `usize` ID managed by [DashboardView::next_id](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L270).
 
-| Field      | Type          | Purpose                              |
-|------------|---------------|--------------------------------------|
-| `layout`   | `PanelLayout` | Root of the layout tree              |
-| `next_id`  | `usize`       | Monotonically increasing ID counter  |
+### State — [DashboardView](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L234)
+
+`DashboardView` maintains a map of [DashboardState](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L45) objects:
+
+| Struct | Field | Type | Purpose |
+|---|---|---|---|
+| [DashboardState](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L45) | `layout` | [PanelLayout](file:///Users/saranyadamo/Downloads/ghost-mux/src/layout.rs#L8) | Root of the layout tree for the dashboard |
+| [DashboardView](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L234) | `next_id` | `usize` | Monotonically increasing ID counter for nodes and tabs |
 
 Mutations:
-- `split_panel(id, dir, cx)` — replace `Leaf(id)` with an `HSplit`/`VSplit`
-- `close_panel(id, cx)` — remove `Leaf(id)`; sibling fills the space
+- **Layout Splits/Closes**:
+  - [split_panel](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L1428) — replace [Leaf](file:///Users/saranyadamo/Downloads/ghost-mux/src/layout.rs#L9) with an [HSplit](file:///Users/saranyadamo/Downloads/ghost-mux/src/layout.rs#L10) or [VSplit](file:///Users/saranyadamo/Downloads/ghost-mux/src/layout.rs#L15)
+  - [close_panel](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L1472) — remove [Leaf](file:///Users/saranyadamo/Downloads/ghost-mux/src/layout.rs#L9); sibling fills the space
+- **Tab Management**:
+  - [add_panel_tab](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L1269) — add a new tab to a panel
+  - [remove_panel_tab](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L1298) — remove a tab from a panel
+  - [switch_panel_tab](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L1343) — activate a different tab in a panel
+  - [set_panel_tab_content](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L1385) — set a tab's component content
+- **Dashboard CRUD**:
+  - [add_dashboard](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L588) — add a new dashboard
+  - [switch_dashboard](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L596) — switch active dashboard
+  - [remove_dashboard](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L620) — delete a dashboard
 
-Both call `cx.notify()` so GPUI re-renders.
+Mutations trigger `cx.notify()` so GPUI re-renders.
 
-### Rendering — `render_layout`
+### Rendering — [render_layout](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L1516)
 
 Recursively traverses the tree:
-- `Leaf(id)` → `render_panel(id, cx)` — shows panel content + toolbar
-- `HSplit` → `h_resizable(...)` with two `resizable_panel` children
-- `VSplit` → `v_resizable(...)` with two `resizable_panel` children
+- [Leaf](file:///Users/saranyadamo/Downloads/ghost-mux/src/layout.rs#L9) → [render_panel](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L1608) — shows panel content + toolbar
+- [HSplit](file:///Users/saranyadamo/Downloads/ghost-mux/src/layout.rs#L10) → `h_resizable(...)` with two `resizable_panel` children
+- [VSplit](file:///Users/saranyadamo/Downloads/ghost-mux/src/layout.rs#L15) → `v_resizable(...)` with two `resizable_panel` children
 
-Resizable split IDs are formed as `"h-{id}"` / `"v-{id}"` and must be unique across the whole tree (guaranteed because `next_id` is monotonic).
+Resizable split IDs are formed as `"h-{id}"` / `"v-{id}"` and must be unique across the whole tree (guaranteed because [DashboardView::next_id](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L270) is monotonic).
 
 ### Panel Toolbar
 
@@ -60,58 +76,56 @@ Buttons dispatch mutations via `cx.listener(move |this, _, _, cx| { ... })`.
 
 ---
 
-## Adding Panel Content
+## Panel Content & Components
 
-Extend `render_panel_content(id, cx)` to map panel IDs to specific widgets:
+Dashboard panels can load different components represented by the [PanelContent](file:///Users/saranyadamo/Downloads/ghost-mux/src/layout.rs#L124) enum. Rendering is routed by [render_panel_content](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L4493) to the respective rendering functions:
 
-```rust
-fn render_panel_content(id: usize, cx: &mut Context<DashboardView>) -> AnyElement {
-    match id {
-        0 => render_chart(cx),
-        1 => render_table(cx),
-        _ => render_placeholder(id, cx),
-    }
-}
-```
-
-For now all panels show a placeholder with their ID.
+- **Terminal**: Handled via [TerminalModel](file:///Users/saranyadamo/Downloads/ghost-mux/src/terminal/mod.rs#L39) which manages the PTY stream. Rendered via [render_terminal](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L5203) using `libghostty-vt` for terminal emulation.
+- **FileExplorer**: Built-in tree explorer rendered via [render_explorer](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L4167) supporting file tree actions (create, delete, rename).
+- **Git**: Sidebar/split component rendered via [render_git](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L4683) to track file diffs and tree changes.
+- **Browser**: Integrates Cocoa's WKWebView wrapper [WebViewHandle](file:///Users/saranyadamo/Downloads/ghost-mux/src/browser.rs#L79) for macOS environments.
+- **Editor**: Text/code file editor rendered via [render_panel_editor](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L6176) with file state management, file save/editing, and diff modes (supporting [render_modal_editor](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L5573), [render_side_by_side_line](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L5983), and [render_inline_diff_line](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L6129)).
 
 ---
 
 ## Key Files
 
-| File                        | Role                                                        |
-|-----------------------------|-------------------------------------------------------------|
-| `src/main.rs`               | App entry point — window setup, theme application          |
-| `src/dashboard.rs`          | `DashboardView` state, split/close mutations                |
-| `src/layout.rs`             | `PanelLayout` binary tree and render helpers                |
-| `src/settings.rs`           | `AppSettings` / `ThemeSettings` — loaded from settings.yaml |
-| `src/persist.rs`            | `DashboardPersistedState` — YAML serialization of layout, tabs, and panel sizes |
-| `src/terminal/`             | Terminal panel integration                                  |
-| `Cargo.toml`                | GPUI + gpui-component + anyhow + terminal dependencies      |
-| `rust-toolchain.toml`       | Pins Rust nightly channel for the workspace                 |
-| `settings.yaml`             | Runtime settings (theme fonts, sizes, radius)               |
-| `dashboard_state.yaml`      | Auto-generated persistence of layout, tabs, and panel sizes |
-| `patches/libghostty-vt-sys` | Vendored build of libghostty-vt-sys with Zig bootstrap      |
-| `patches/gpui-component`    | Local fork of gpui-component — adds `ResizableState::new_with_ratios` for panel-size restore |
-| `tools/linux/ensure-zig.sh` | Download/cache repo-local Zig (Linux + shared shell logic)   |
-| `tools/macos/ensure-zig.sh` | macOS wrapper → tools/linux/ensure-zig.sh                   |
-| `tools/windows/ensure-zig.ps1` | Download/cache repo-local Zig (Windows PowerShell)      |
-| `tools/windows/ensure-zig.cmd` | Thin cmd wrapper → ensure-zig.ps1                        |
-| `tools/linux/build-production.sh` | Release build + dependency bundle (Linux + shared shell logic) |
-| `tools/macos/build-production.sh` | macOS wrapper → tools/linux/build-production.sh       |
-| `tools/windows/build-production.ps1` | Release build + bundle (Windows PowerShell)       |
-| `tools/windows/build-production.cmd` | Thin cmd wrapper → build-production.ps1            |
-| `tools/linux/run-production.sh` | Launch bundled binary (Linux + shared shell logic)      |
-| `tools/macos/run-production.sh` | macOS wrapper → tools/linux/run-production.sh          |
-| `tools/windows/run-production.ps1` | Launch bundled binary (Windows PowerShell)          |
-| `tools/windows/run-production.cmd` | Thin cmd wrapper → run-production.ps1               |
-| `tools/linux/dev-run.sh`        | `cargo run` for development (Linux + shared shell logic) |
-| `tools/macos/dev-run.sh`        | macOS wrapper → tools/linux/dev-run.sh               |
-| `tools/windows/dev-run.ps1`     | `cargo run` for development (Windows PowerShell)        |
-| `tools/windows/dev-run.cmd`     | Thin cmd wrapper → dev-run.ps1                          |
-| `AGENTS.md`                 | This file                                                   |
-| `.gitignore`                | Ignores `/target`, `/dist`, `/.tools`                       |
+| File | Role |
+|------|------|
+| [src/main.rs](file:///Users/saranyadamo/Downloads/ghost-mux/src/main.rs) | App entry point — window setup, reference theme application via [apply_reference_theme](file:///Users/saranyadamo/Downloads/ghost-mux/src/main.rs#L15), and GPUI runner in [main](file:///Users/saranyadamo/Downloads/ghost-mux/src/main.rs#L44) |
+| [src/dashboard.rs](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs) | Main view [DashboardView](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L234) holding [DashboardState](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L45) elements, handling pane splits/tabs, and core layout rendering |
+| [src/layout.rs](file:///Users/saranyadamo/Downloads/ghost-mux/src/layout.rs) | Layout binary tree model [PanelLayout](file:///Users/saranyadamo/Downloads/ghost-mux/src/layout.rs#L8) and panel component enum [PanelContent](file:///Users/saranyadamo/Downloads/ghost-mux/src/layout.rs#L124) |
+| [src/settings.rs](file:///Users/saranyadamo/Downloads/ghost-mux/src/settings.rs) | Application configurations: [AppSettings](file:///Users/saranyadamo/Downloads/ghost-mux/src/settings.rs#L7), [ThemeSettings](file:///Users/saranyadamo/Downloads/ghost-mux/src/settings.rs#L63), [LayoutSettings](file:///Users/saranyadamo/Downloads/ghost-mux/src/settings.rs#L87), and [TerminalSettings](file:///Users/saranyadamo/Downloads/ghost-mux/src/settings.rs#L123) |
+| [src/persist.rs](file:///Users/saranyadamo/Downloads/ghost-mux/src/persist.rs) | Layout serialisation/deserialisation via [DashboardPersistedState](file:///Users/saranyadamo/Downloads/ghost-mux/src/persist.rs#L149), [SerDashboard](file:///Users/saranyadamo/Downloads/ghost-mux/src/persist.rs#L133), [SerPanelLayout](file:///Users/saranyadamo/Downloads/ghost-mux/src/persist.rs#L59), and [SerPanelContent](file:///Users/saranyadamo/Downloads/ghost-mux/src/persist.rs#L19) |
+| [src/browser.rs](file:///Users/saranyadamo/Downloads/ghost-mux/src/browser.rs) | WKWebView wrapper [WebViewHandle](file:///Users/saranyadamo/Downloads/ghost-mux/src/browser.rs#L79) integrating macOS Cocoa webview with GPUI |
+| [src/hook_server.rs](file:///Users/saranyadamo/Downloads/ghost-mux/src/hook_server.rs) | TCP Server ([start_hook_server](file:///Users/saranyadamo/Downloads/ghost-mux/src/hook_server.rs#L13)) for routing agent lifecycle notifications, plus config auto-patches in [setup_agent_hooks](file:///Users/saranyadamo/Downloads/ghost-mux/src/hook_server.rs#L113) |
+| [src/terminal/mod.rs](file:///Users/saranyadamo/Downloads/ghost-mux/src/terminal/mod.rs) | PTY stream wrapper [TerminalModel](file:///Users/saranyadamo/Downloads/ghost-mux/src/terminal/mod.rs#L39) implementing terminal emulation via `libghostty-vt` bindings |
+| [Cargo.toml](file:///Users/saranyadamo/Downloads/ghost-mux/Cargo.toml) | Cargo workspace manifest |
+| [rust-toolchain.toml](file:///Users/saranyadamo/Downloads/ghost-mux/rust-toolchain.toml) | Workspace Rust compiler version override |
+| [settings.yaml](file:///Users/saranyadamo/Downloads/ghost-mux/settings.yaml) | Runtime fonts, styling boundaries, radius configurations |
+| [dashboard_state.yaml](file:///Users/saranyadamo/Downloads/ghost-mux/dashboard_state.yaml) | Auto-generated persistence of layouts, tab mappings, and ratios |
+| [Todo.md](file:///Users/saranyadamo/Downloads/ghost-mux/Todo.md) | Ongoing roadmap goals (LSP support, Mobile, Syntax highlight, etc.) |
+| [README.md](file:///Users/saranyadamo/Downloads/ghost-mux/README.md) | User overview and instructions |
+| [patches/libghostty-vt-sys](file:///Users/saranyadamo/Downloads/ghost-mux/patches/libghostty-vt-sys) | Vendored bindings of `libghostty-vt` with a custom Zig-based [build.rs](file:///Users/saranyadamo/Downloads/ghost-mux/patches/libghostty-vt-sys/build.rs#L9) detecting the repo-local Zig compiler |
+| [patches/gpui-component](file:///Users/saranyadamo/Downloads/ghost-mux/patches/gpui-component) | Local component toolkit fork modifying panel restoring behavior |
+| [tools/linux/ensure-zig.sh](file:///Users/saranyadamo/Downloads/ghost-mux/tools/linux/ensure-zig.sh) | Zig installer tool for Unix systems |
+| [tools/macos/ensure-zig.sh](file:///Users/saranyadamo/Downloads/ghost-mux/tools/macos/ensure-zig.sh) | macOS wrapper script checking for Zig |
+| [tools/windows/ensure-zig.ps1](file:///Users/saranyadamo/Downloads/ghost-mux/tools/windows/ensure-zig.ps1) | PowerShell script installing local Zig |
+| [tools/windows/ensure-zig.cmd](file:///Users/saranyadamo/Downloads/ghost-mux/tools/windows/ensure-zig.cmd) | Windows Command Prompt wrapper for Zig setup |
+| [tools/linux/build-production.sh](file:///Users/saranyadamo/Downloads/ghost-mux/tools/linux/build-production.sh) | Production build pipeline for Linux/Git Bash |
+| [tools/macos/build-production.sh](file:///Users/saranyadamo/Downloads/ghost-mux/tools/macos/build-production.sh) | macOS packaging script for release bundles |
+| [tools/windows/build-production.ps1](file:///Users/saranyadamo/Downloads/ghost-mux/tools/windows/build-production.ps1) | Windows PowerShell release bundle compilation script |
+| [tools/windows/build-production.cmd](file:///Users/saranyadamo/Downloads/ghost-mux/tools/windows/build-production.cmd) | Command wrapper triggering release compile |
+| [tools/linux/run-production.sh](file:///Users/saranyadamo/Downloads/ghost-mux/tools/linux/run-production.sh) | Launch script for production build targets under Linux |
+| [tools/macos/run-production.sh](file:///Users/saranyadamo/Downloads/ghost-mux/tools/macos/run-production.sh) | Release app launch wrapper for macOS environments |
+| [tools/windows/run-production.ps1](file:///Users/saranyadamo/Downloads/ghost-mux/tools/windows/run-production.ps1) | PowerShell wrapper targeting release executable launch |
+| [tools/windows/run-production.cmd](file:///Users/saranyadamo/Downloads/ghost-mux/tools/windows/run-production.cmd) | CMD launcher shim for production |
+| [tools/linux/dev-run.sh](file:///Users/saranyadamo/Downloads/ghost-mux/tools/linux/dev-run.sh) | Quick development runner on Unix systems |
+| [tools/macos/dev-run.sh](file:///Users/saranyadamo/Downloads/ghost-mux/tools/macos/dev-run.sh) | Development runner command on macOS |
+| [tools/windows/dev-run.ps1](file:///Users/saranyadamo/Downloads/ghost-mux/tools/windows/dev-run.ps1) | PowerShell debug dev runner on Windows |
+| [tools/windows/dev-run.cmd](file:///Users/saranyadamo/Downloads/ghost-mux/tools/windows/dev-run.cmd) | CMD shim for developer run command |
+| [AGENTS.md](file:///Users/saranyadamo/Downloads/ghost-mux/AGENTS.md) | Core repository documentation index (this file) |
+| [.gitignore](file:///Users/saranyadamo/Downloads/ghost-mux/.gitignore) | Git ignore specifications |
 
 ---
 
@@ -123,7 +137,7 @@ For now all panels show a placeholder with their ID.
 - **`AnyElement`**: every helper returns `.into_any_element()` for composability
 - **`cx.listener`**: use `cx.listener(move |this, _, _window, cx| { ... })` for event handlers in render — captures by move, `this` is `&mut DashboardView`
 - **Build**: `cargo run` (or `~/.cargo/bin/cargo run` if cargo is not on PATH)
-- **Zig toolchain**: pinned at **0.15.2**, cached repo-locally at `.tools/zig/toolchain/` (gitignored). Auto-bootstrapped by `tools/linux/ensure-zig.sh` (or `tools/macos/ensure-zig.sh`) and `tools/windows/ensure-zig.ps1` — no global Zig install required.
+- **Zig toolchain**: pinned at **0.15.2**, cached repo-locally at `.tools/zig/toolchain/` (gitignored). Auto-bootstrapped by [tools/linux/ensure-zig.sh](file:///Users/saranyadamo/Downloads/ghost-mux/tools/linux/ensure-zig.sh) (or [tools/macos/ensure-zig.sh](file:///Users/saranyadamo/Downloads/ghost-mux/tools/macos/ensure-zig.sh)) and [tools/windows/ensure-zig.ps1](file:///Users/saranyadamo/Downloads/ghost-mux/tools/windows/ensure-zig.ps1) — no global Zig install required.
 
 ---
 
@@ -135,13 +149,13 @@ Zig is managed **inside this repo** — no system-wide install needed.
 
 | Script | Purpose |
 |---|---|
-| `tools/linux/ensure-zig.sh` | Install/reuse Zig 0.15.2 in `.tools/zig/toolchain/` |
-| `tools/macos/ensure-zig.sh` | macOS wrapper → tools/linux/ensure-zig.sh |
-| `tools/windows/ensure-zig.ps1` | Same, for Windows PowerShell |
-| `tools/windows/ensure-zig.cmd` | Windows cmd shim → ensure-zig.ps1 |
+| [tools/linux/ensure-zig.sh](file:///Users/saranyadamo/Downloads/ghost-mux/tools/linux/ensure-zig.sh) | Install/reuse Zig 0.15.2 in `.tools/zig/toolchain/` |
+| [tools/macos/ensure-zig.sh](file:///Users/saranyadamo/Downloads/ghost-mux/tools/macos/ensure-zig.sh) | macOS wrapper → [tools/linux/ensure-zig.sh](file:///Users/saranyadamo/Downloads/ghost-mux/tools/linux/ensure-zig.sh) |
+| [tools/windows/ensure-zig.ps1](file:///Users/saranyadamo/Downloads/ghost-mux/tools/windows/ensure-zig.ps1) | Same, for Windows PowerShell |
+| [tools/windows/ensure-zig.cmd](file:///Users/saranyadamo/Downloads/ghost-mux/tools/windows/ensure-zig.cmd) | Windows cmd shim → [tools/windows/ensure-zig.ps1](file:///Users/saranyadamo/Downloads/ghost-mux/tools/windows/ensure-zig.ps1) |
 
-- Called automatically by `tools/linux/build-production.sh` / `tools/windows/build-production.ps1`.
-- For plain `cargo check` / `cargo build`, the `build.rs` in `patches/libghostty-vt-sys` walks up from `CARGO_MANIFEST_DIR` to find `.tools/zig/toolchain/zig[.exe]` automatically — no env var needed.
+- Called automatically by [tools/linux/build-production.sh](file:///Users/saranyadamo/Downloads/ghost-mux/tools/linux/build-production.sh) / [tools/windows/build-production.ps1](file:///Users/saranyadamo/Downloads/ghost-mux/tools/windows/build-production.ps1).
+- For plain `cargo check` / `cargo build`, the [build.rs](file:///Users/saranyadamo/Downloads/ghost-mux/patches/libghostty-vt-sys/build.rs) in `patches/libghostty-vt-sys` walks up from `CARGO_MANIFEST_DIR` to find `.tools/zig/toolchain/zig[.exe]` automatically — no env var needed.
 - Pin a different version: `ZIG_VERSION=0.16.0 ./tools/linux/ensure-zig.sh`
 
 ### Production Bundle
@@ -150,10 +164,10 @@ The build scripts compile a `--release` binary, collect non-system runtime dylib
 
 | Script | OS |
 |---|---|
-| `tools/linux/build-production.sh` | Linux, Git Bash on Windows |
-| `tools/macos/build-production.sh` | macOS |
-| `tools/windows/build-production.ps1` | Windows PowerShell |
-| `tools/windows/build-production.cmd` | Windows cmd (delegates to ps1) |
+| [tools/linux/build-production.sh](file:///Users/saranyadamo/Downloads/ghost-mux/tools/linux/build-production.sh) | Linux, Git Bash on Windows |
+| [tools/macos/build-production.sh](file:///Users/saranyadamo/Downloads/ghost-mux/tools/macos/build-production.sh) | macOS |
+| [tools/windows/build-production.ps1](file:///Users/saranyadamo/Downloads/ghost-mux/tools/windows/build-production.ps1) | Windows PowerShell |
+| [tools/windows/build-production.cmd](file:///Users/saranyadamo/Downloads/ghost-mux/tools/windows/build-production.cmd) | Windows cmd (delegates to ps1) |
 
 macOS: uses `otool` + `install_name_tool` to rewrite dylib paths under `lib/`.  
 Linux: uses `ldd` + `patchelf` (or `chrpath`, or a `run.sh` wrapper as fallback).  
@@ -163,10 +177,10 @@ Windows: no bundling needed; PE binaries link against system DLLs.
 
 | Script | OS |
 |---|---|
-| `tools/linux/run-production.sh` | Linux, Git Bash |
-| `tools/macos/run-production.sh` | macOS |
-| `tools/windows/run-production.ps1` | Windows PowerShell |
-| `tools/windows/run-production.cmd` | Windows cmd |
+| [tools/linux/run-production.sh](file:///Users/saranyadamo/Downloads/ghost-mux/tools/linux/run-production.sh) | Linux, Git Bash |
+| [tools/macos/run-production.sh](file:///Users/saranyadamo/Downloads/ghost-mux/tools/macos/run-production.sh) | macOS |
+| [tools/windows/run-production.ps1](file:///Users/saranyadamo/Downloads/ghost-mux/tools/windows/run-production.ps1) | Windows PowerShell |
+| [tools/windows/run-production.cmd](file:///Users/saranyadamo/Downloads/ghost-mux/tools/windows/run-production.cmd) | Windows cmd |
 
 Prefers `run.sh` wrapper inside the bundle (Linux fallback) over calling the binary directly.
 
