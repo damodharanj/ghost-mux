@@ -37,8 +37,8 @@ Every node has a unique `usize` ID managed by [DashboardView::next_id](file:///U
 
 | Struct | Field | Type | Purpose |
 |---|---|---|---|
-| [DashboardState](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L46) | `layout` | [PanelLayout](file:///Users/saranyadamo/Downloads/ghost-mux/src/layout.rs#L8) | Root of the layout tree for the dashboard |
-| [DashboardView](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L244) | `next_id` | `usize` | Monotonically increasing ID counter for nodes and tabs |
+| [DashboardState](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L46) | [layout](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L49) | [PanelLayout](file:///Users/saranyadamo/Downloads/ghost-mux/src/layout.rs#L8) | Root of the layout tree for the dashboard |
+| [DashboardView](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L244) | [next_id](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L281) | `usize` | Monotonically increasing ID counter for nodes and tabs |
 
 Mutations:
 - **Layout Splits/Closes**:
@@ -97,11 +97,12 @@ Dashboard panels can load different components represented by the [PanelContent]
 | [src/dashboard.rs](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs) | Main view [DashboardView](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L244) holding [DashboardState](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L46) elements, handling pane splits/tabs, and core layout rendering |
 | [src/layout.rs](file:///Users/saranyadamo/Downloads/ghost-mux/src/layout.rs) | Layout binary tree model [PanelLayout](file:///Users/saranyadamo/Downloads/ghost-mux/src/layout.rs#L8) and panel component enum [PanelContent](file:///Users/saranyadamo/Downloads/ghost-mux/src/layout.rs#L124) |
 | [src/lsp.rs](file:///Users/saranyadamo/Downloads/ghost-mux/src/lsp.rs) | Language Server Protocol (LSP) integration: [LspClient](file:///Users/saranyadamo/Downloads/ghost-mux/src/lsp.rs#L31) manages process and JSON-RPC lifecycle, while [GhostCompletionProvider](file:///Users/saranyadamo/Downloads/ghost-mux/src/lsp.rs#L351), [GhostHoverProvider](file:///Users/saranyadamo/Downloads/ghost-mux/src/lsp.rs#L405), and [GhostDefinitionProvider](file:///Users/saranyadamo/Downloads/ghost-mux/src/lsp.rs#L443) hook IDE functions into editor buffers |
-| [src/settings.rs](file:///Users/saranyadamo/Downloads/ghost-mux/src/settings.rs) | Application configurations: [AppSettings](file:///Users/saranyadamo/Downloads/ghost-mux/src/settings.rs#L7), [ThemeSettings](file:///Users/saranyadamo/Downloads/ghost-mux/src/settings.rs#L65), [LayoutSettings](file:///Users/saranyadamo/Downloads/ghost-mux/src/settings.rs#L89), and [TerminalSettings](file:///Users/saranyadamo/Downloads/ghost-mux/src/settings.rs#L125) |
+| [src/settings.rs](file:///Users/saranyadamo/Downloads/ghost-mux/src/settings.rs) | Application configurations: [AppSettings](file:///Users/saranyadamo/Downloads/ghost-mux/src/settings.rs#L7), [ThemeSettings](file:///Users/saranyadamo/Downloads/ghost-mux/src/settings.rs#L65), [LayoutSettings](file:///Users/saranyadamo/Downloads/ghost-mux/src/settings.rs#L89), [TerminalSettings](file:///Users/saranyadamo/Downloads/ghost-mux/src/settings.rs#L125), and [LspSettings](file:///Users/saranyadamo/Downloads/ghost-mux/src/settings.rs#L155) |
 | [src/persist.rs](file:///Users/saranyadamo/Downloads/ghost-mux/src/persist.rs) | Layout serialisation/deserialisation via [DashboardPersistedState](file:///Users/saranyadamo/Downloads/ghost-mux/src/persist.rs#L152), [SerDashboard](file:///Users/saranyadamo/Downloads/ghost-mux/src/persist.rs#L136), [SerPanelLayout](file:///Users/saranyadamo/Downloads/ghost-mux/src/persist.rs#L62), and [SerPanelContent](file:///Users/saranyadamo/Downloads/ghost-mux/src/persist.rs#L19) |
 | [src/browser.rs](file:///Users/saranyadamo/Downloads/ghost-mux/src/browser.rs) | WKWebView wrapper [WebViewHandle](file:///Users/saranyadamo/Downloads/ghost-mux/src/browser.rs#L79) integrating macOS Cocoa webview with GPUI |
 | [src/hook_server.rs](file:///Users/saranyadamo/Downloads/ghost-mux/src/hook_server.rs) | TCP Server ([start_hook_server](file:///Users/saranyadamo/Downloads/ghost-mux/src/hook_server.rs#L13)) for routing agent lifecycle notifications, plus config auto-patches in [setup_agent_hooks](file:///Users/saranyadamo/Downloads/ghost-mux/src/hook_server.rs#L113) |
 | [src/terminal/mod.rs](file:///Users/saranyadamo/Downloads/ghost-mux/src/terminal/mod.rs) | PTY stream wrapper [TerminalModel](file:///Users/saranyadamo/Downloads/ghost-mux/src/terminal/mod.rs#L39) implementing terminal emulation via `libghostty-vt` bindings |
+| [.github/workflows/build.yml](file:///Users/saranyadamo/Downloads/ghost-mux/.github/workflows/build.yml) | GitHub Actions CI build & release workflow |
 | [Cargo.toml](file:///Users/saranyadamo/Downloads/ghost-mux/Cargo.toml) | Cargo workspace manifest |
 | [rust-toolchain.toml](file:///Users/saranyadamo/Downloads/ghost-mux/rust-toolchain.toml) | Workspace Rust compiler version override |
 | [settings.yaml](file:///Users/saranyadamo/Downloads/ghost-mux/settings.yaml) | Runtime fonts, styling boundaries, radius configurations |
@@ -110,6 +111,9 @@ Dashboard panels can load different components represented by the [PanelContent]
 | [README.md](file:///Users/saranyadamo/Downloads/ghost-mux/README.md) | User overview and instructions |
 | [patches/libghostty-vt-sys](file:///Users/saranyadamo/Downloads/ghost-mux/patches/libghostty-vt-sys) | Vendored bindings of `libghostty-vt` with a custom Zig-based [build.rs](file:///Users/saranyadamo/Downloads/ghost-mux/patches/libghostty-vt-sys/build.rs#L9) detecting the repo-local Zig compiler |
 | [patches/gpui-component](file:///Users/saranyadamo/Downloads/ghost-mux/patches/gpui-component) | Local component toolkit fork modifying panel restoring behavior |
+| [patches/gpui-component.patch](file:///Users/saranyadamo/Downloads/ghost-mux/patches/gpui-component.patch) | Git patch applied to upstream gpui-component repository |
+| [tools/setup-patches.sh](file:///Users/saranyadamo/Downloads/ghost-mux/tools/setup-patches.sh) | Shell script to clone and patch gpui-component on Unix/macOS |
+| [tools/setup-patches.ps1](file:///Users/saranyadamo/Downloads/ghost-mux/tools/setup-patches.ps1) | PowerShell script to clone and patch gpui-component on Windows |
 | [tools/linux/ensure-zig.sh](file:///Users/saranyadamo/Downloads/ghost-mux/tools/linux/ensure-zig.sh) | Zig installer tool for Unix systems |
 | [tools/macos/ensure-zig.sh](file:///Users/saranyadamo/Downloads/ghost-mux/tools/macos/ensure-zig.sh) | macOS wrapper script checking for Zig |
 | [tools/windows/ensure-zig.ps1](file:///Users/saranyadamo/Downloads/ghost-mux/tools/windows/ensure-zig.ps1) | PowerShell script installing local Zig |
@@ -157,8 +161,8 @@ Zig is managed **inside this repo** — no system-wide install needed.
 | [tools/windows/ensure-zig.cmd](file:///Users/saranyadamo/Downloads/ghost-mux/tools/windows/ensure-zig.cmd) | Windows cmd shim → [tools/windows/ensure-zig.ps1](file:///Users/saranyadamo/Downloads/ghost-mux/tools/windows/ensure-zig.ps1) |
 
 - Called automatically by [tools/linux/build-production.sh](file:///Users/saranyadamo/Downloads/ghost-mux/tools/linux/build-production.sh) / [tools/windows/build-production.ps1](file:///Users/saranyadamo/Downloads/ghost-mux/tools/windows/build-production.ps1).
-- For plain `cargo check` / `cargo build`, the [build.rs](file:///Users/saranyadamo/Downloads/ghost-mux/patches/libghostty-vt-sys/build.rs) in `patches/libghostty-vt-sys` walks up from `CARGO_MANIFEST_DIR` to find `.tools/zig/toolchain/zig[.exe]` automatically — no env var needed.
-- Pin a different version: `ZIG_VERSION=0.16.0 ./tools/linux/ensure-zig.sh`
+- For plain `cargo check` / `cargo build`, the [build.rs](file:///Users/saranyadamo/Downloads/ghost-mux/patches/libghostty-vt-sys/build.rs#L9) in [patches/libghostty-vt-sys](file:///Users/saranyadamo/Downloads/ghost-mux/patches/libghostty-vt-sys) walks up from `CARGO_MANIFEST_DIR` to find `.tools/zig/toolchain/zig[.exe]` automatically — no env var needed.
+- Pin a different version: `ZIG_VERSION=0.16.0 [./tools/linux/ensure-zig.sh](file:///Users/saranyadamo/Downloads/ghost-mux/tools/linux/ensure-zig.sh)`
 
 ### Production Bundle
 

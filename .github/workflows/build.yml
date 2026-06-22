@@ -27,8 +27,6 @@ jobs:
             artifact_name: ghost-mux-linux-x86_64.tar.gz
           - os: macos-latest
             artifact_name: ghost-mux-macos-arm64.tar.gz
-          - os: windows-latest
-            artifact_name: ghost-mux-windows-x86_64.zip
 
     steps:
       - name: Checkout repository
@@ -62,23 +60,14 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .tools/zig
-          key: ${{ runner.os }}-zig-${{ hashFiles('tools/linux/ensure-zig.sh', 'tools/windows/ensure-zig.ps1') }}
+          key: ${{ runner.os }}-zig-${{ hashFiles('tools/linux/ensure-zig.sh') }}
 
-      - name: Install Zig toolchain (Linux/macOS)
-        if: matrix.os != 'windows-latest'
+      - name: Install Zig toolchain
         run: |
           chmod +x tools/linux/ensure-zig.sh
           ./tools/linux/ensure-zig.sh
           # Add local Zig binary to GitHub Actions PATH
           echo "$(pwd)/.tools/zig/toolchain" >> $GITHUB_PATH
-
-      - name: Install Zig toolchain (Windows)
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: |
-          $zigBin = .\tools\windows\ensure-zig.ps1
-          $zigDir = Split-Path -Parent $zigBin
-          echo "$zigDir" >> $env:GITHUB_PATH
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
@@ -98,17 +87,10 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Setup patches (Linux/macOS)
-        if: matrix.os != 'windows-latest'
+      - name: Setup patches
         run: |
           chmod +x tools/setup-patches.sh
           ./tools/setup-patches.sh
-
-      - name: Setup patches (Windows)
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: |
-          .\tools\setup-patches.ps1
 
       - name: Cargo check
         run: cargo check
@@ -116,17 +98,10 @@ jobs:
       - name: Cargo test
         run: cargo test
 
-      - name: Build production bundle (Linux/macOS)
-        if: matrix.os != 'windows-latest'
+      - name: Build production bundle
         run: |
           chmod +x tools/linux/build-production.sh
           ./tools/linux/build-production.sh
-
-      - name: Build production bundle (Windows)
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: |
-          .\tools\windows\build-production.ps1
 
       - name: Package bundle (Linux)
         if: matrix.os == 'ubuntu-latest'
@@ -139,13 +114,6 @@ jobs:
         run: |
           cd dist
           tar -czf ../ghost-mux-macos-arm64.tar.gz ghost-mux
-
-      - name: Package bundle (Windows)
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: |
-          cd dist
-          Compress-Archive -Path ghost-mux -DestinationPath ../ghost-mux-windows-x86_64.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -167,16 +135,16 @@ jobs:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
-          path: artifacts
-          pattern: ghost-mux-*
           merge-multiple: true
 
       - name: List downloaded artifacts
-        run: ls -lh artifacts
+        run: ls -lh
 
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/*
+          files: |
+            ghost-mux-linux-x86_64.tar.gz
+            ghost-mux-macos-arm64.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
