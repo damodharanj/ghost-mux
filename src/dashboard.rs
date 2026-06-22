@@ -2721,7 +2721,13 @@ impl DashboardView {
                 div()
                     .flex()
                     .items_center()
+                    .gap_1()
                     .children(lsp_el)
+                    .child(
+                        Icon::new(IconName::Ghost)
+                            .size_3p5()
+                            .text_color(theme.muted_foreground)
+                    )
                     .child(
                         div()
                             .text_color(theme.muted_foreground)
@@ -2813,9 +2819,22 @@ impl Render for DashboardView {
                 .flex_1()
                 .h_full()
                 .bg(theme.background)
+                .flex()
+                .flex_col()
                 .items_center()
                 .justify_center()
-                .child("No dashboards")
+                .gap_3()
+                .child(
+                    Icon::new(IconName::Ghost)
+                        .size(px(48.))
+                        .text_color(theme.muted_foreground)
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(theme.muted_foreground)
+                        .child("No dashboards")
+                )
                 .into_any_element()
         };
 
@@ -6686,6 +6705,9 @@ fn render_term_row(
         .text_size(px(term_font_size))
         .children(runs.into_iter().map(|(text, fg, bg)| {
             div()
+                .h_full()
+                .flex()
+                .items_center()
                 .font_family(term_font_family.clone())
                 .text_size(px(term_font_size))
                 .text_color(rgb(fg))

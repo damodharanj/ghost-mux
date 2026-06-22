@@ -42,9 +42,74 @@ fn apply_reference_theme(settings: &ThemeSettings, cx: &mut App) {
     theme.radius_lg = px(settings.radius_lg);
 }
 
+fn setup_working_directory() {
+    // 1. If settings.yaml exists in CWD, do nothing.
+    if std::path::Path::new("settings.yaml").exists() {
+        return;
+    }
+
+    // 2. If settings.yaml exists next to the executable, change CWD to that directory.
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(exe_dir) = current_exe.parent() {
+            if exe_dir.join("settings.yaml").exists() {
+                let _ = std::env::set_current_dir(exe_dir);
+                return;
+            }
+        }
+    }
+
+    // 3. If running inside a macOS bundle or launched from root directory, use Application Support.
+    #[cfg(target_os = "macos")]
+    {
+        let current_dir = std::env::current_dir().unwrap_or_default();
+        let current_exe = std::env::current_exe().unwrap_or_default();
+        let is_bundle = current_exe.to_string_lossy().contains(".app/Contents/MacOS/");
+        let is_root_dir = current_dir == std::path::Path::new("/");
+
+        if is_bundle || is_root_dir {
+            if let Ok(home) = std::env::var("HOME") {
+                let app_support = std::path::PathBuf::from(home)
+                    .join("Library/Application Support/ghost-mux");
+                
+                let _ = std::fs::create_dir_all(&app_support);
+
+                let dest_settings = app_support.join("settings.yaml");
+                if !dest_settings.exists() {
+                    // Try to copy from bundle's Resources directory
+                    if let Some(macos_dir) = current_exe.parent() {
+                        if let Some(contents_dir) = macos_dir.parent() {
+                            let resources_settings = contents_dir.join("Resources/settings.yaml");
+                            if resources_settings.exists() {
+                                let _ = std::fs::copy(&resources_settings, &dest_settings);
+                            }
+                        }
+                    }
+                }
+
+                let _ = std::env::set_current_dir(&app_support);
+            }
+        }
+    }
+}
+actions!(app, [Quit]);
+
+fn quit(_: &Quit, cx: &mut App) {
+    cx.quit();
+}
+
 fn main() {
+    setup_working_directory();
     let app = gpui_platform::application().with_assets(gpui_component_assets::Assets);
     app.run(move |cx| {
+        cx.on_action(quit);
+        cx.bind_keys([
+            KeyBinding::new("cmd-q", Quit, None),
+        ]);
+        cx.set_menus(vec![Menu {
+            name: "Ghost-mux".into(),
+            items: vec![MenuItem::action("Quit", Quit)],
+            disabled: false,
+        }]);
         let settings = AppSettings::load_from_file(Path::new("settings.yaml")).unwrap_or_else(|err| {
             eprintln!("Unable to load settings.yaml, using defaults: {err:#}");
             AppSettings::default()

@@ -135,7 +135,7 @@ impl Default for TerminalSettings {
         Self {
             font_family: "Menlo".to_string(),
             font_size: 14.0,
-            line_height: 21.0,
+            line_height: 17.0,
             char_width: 8.4,
             resize_debounce_ms: 150,
         }
