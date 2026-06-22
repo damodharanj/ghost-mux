@@ -300,11 +300,65 @@ index a8131ebb..801a5e7b 100644
              }
          }
  
+diff --git a/crates/ui/src/input/lsp/definitions.rs b/crates/ui/src/input/lsp/definitions.rs
+index 9536603c..e5473f5b 100644
+--- a/crates/ui/src/input/lsp/definitions.rs
++++ b/crates/ui/src/input/lsp/definitions.rs
+@@ -159,7 +159,12 @@ impl InputState {
+         location: &lsp_types::LocationLink,
+         cx: &mut Context<Self>,
+     ) {
+-        if location
++        if location.target_uri.scheme().map(|s| s.as_str() == "file") == Some(true) {
++            cx.emit(crate::input::InputEvent::OpenUri {
++                uri: location.target_uri.clone(),
++                range: Some(location.target_range),
++            });
++        } else if location
+             .target_uri
+             .scheme()
+             .map(|s| s.as_str() == "https" || s.as_str() == "http")
+diff --git a/crates/ui/src/input/popovers/diagnostic_popover.rs b/crates/ui/src/input/popovers/diagnostic_popover.rs
+index 84631e3a..8413d978 100644
+--- a/crates/ui/src/input/popovers/diagnostic_popover.rs
++++ b/crates/ui/src/input/popovers/diagnostic_popover.rs
+@@ -69,7 +69,10 @@ impl Render for DiagnosticPopover {
+             return Empty.into_any_element();
+         }
+ 
+-        let message = self.diagnostic.message.clone();
++        let line_no = self.diagnostic.diagnostic.range.start.line + 1;
++        let col_no = self.diagnostic.diagnostic.range.start.character + 1;
++        let formatted_message = format!("**[Line {line_no}, Col {col_no}]**\n\n{}", self.diagnostic.message);
++        let shared_message = gpui::SharedString::from(formatted_message);
+ 
+         let (border, bg, fg) = (
+             self.diagnostic.severity.border(cx),
+@@ -81,7 +84,7 @@ impl Render for DiagnosticPopover {
+             "diagnostic-popover",
+             self.state.clone(),
+             self.diagnostic.range.clone(),
+-            move |window, cx| render_markdown("message", message.clone(), window, cx),
++            move |window, cx| render_markdown("message", shared_message.clone(), window, cx),
+         )
+         .when(!self.open, |this| this.invisible())
+         .px_1()
 diff --git a/crates/ui/src/input/state.rs b/crates/ui/src/input/state.rs
-index db2f796f..f53f3e0e 100644
+index db2f796f..d0a37cc9 100644
 --- a/crates/ui/src/input/state.rs
 +++ b/crates/ui/src/input/state.rs
-@@ -368,6 +368,7 @@ pub struct InputState {
+@@ -122,6 +122,10 @@ pub enum InputEvent {
+     PressEnter { secondary: bool, shift: bool },
+     Focus,
+     Blur,
++    OpenUri {
++        uri: lsp_types::Uri,
++        range: Option<lsp_types::Range>,
++    },
+ }
+ 
+ pub(super) const CONTEXT: &str = "Input";
+@@ -368,6 +372,7 @@ pub struct InputState {
      pub(super) masked: bool,
      pub(super) clean_on_escape: bool,
      pub(super) submit_on_enter: bool,
@@ -312,7 +366,7 @@ index db2f796f..f53f3e0e 100644
      pub(super) soft_wrap: bool,
      pub(super) show_whitespaces: bool,
      /// This flag tells the renderer to prefer the end of the current visual line.
-@@ -482,6 +483,7 @@ impl InputState {
+@@ -482,6 +487,7 @@ impl InputState {
              masked: false,
              clean_on_escape: false,
              submit_on_enter: false,
@@ -320,7 +374,7 @@ index db2f796f..f53f3e0e 100644
              soft_wrap: true,
              show_whitespaces: false,
              loading: false,
-@@ -584,6 +586,12 @@ impl InputState {
+@@ -584,6 +590,12 @@ impl InputState {
          self
      }
  
@@ -333,7 +387,7 @@ index db2f796f..f53f3e0e 100644
      /// Set placeholder
      pub fn placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
          self.placeholder = placeholder.into();
-@@ -778,6 +786,44 @@ impl InputState {
+@@ -778,6 +790,44 @@ impl InputState {
          cx.notify();
      }
  
@@ -378,7 +432,7 @@ index db2f796f..f53f3e0e 100644
      /// Insert text at the current cursor position.
      ///
      /// And the cursor will be moved to the end of inserted text.
-@@ -831,8 +877,7 @@ impl InputState {
+@@ -831,8 +881,7 @@ impl InputState {
      /// Set with disabled mode.
      ///
      /// See also: [`Self::set_disabled`], [`Self::is_disabled`].
@@ -388,7 +442,7 @@ index db2f796f..f53f3e0e 100644
          self.disabled = disabled;
          self
      }
-@@ -970,6 +1015,14 @@ impl InputState {
+@@ -970,6 +1019,18 @@ impl InputState {
          SharedString::new(self.text.to_string())
      }
  
@@ -400,10 +454,14 @@ index db2f796f..f53f3e0e 100644
 +        cx.notify();
 +    }
 +
++    pub fn scroll_to_offset(&mut self, offset: usize, cx: &mut Context<Self>) {
++        self.scroll_to(offset, None, cx);
++    }
++
      /// Return the portion of the value within the input field that
      /// is selected by the user
      pub fn selected_value(&self) -> SharedString {
-@@ -1435,6 +1488,7 @@ impl InputState {
+@@ -1435,6 +1496,7 @@ impl InputState {
          window: &mut Window,
          cx: &mut Context<Self>,
      ) {

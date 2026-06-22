@@ -60,8 +60,8 @@ Mutations trigger `cx.notify()` so GPUI re-renders.
 
 Recursively traverses the tree:
 - [Leaf](file:///Users/saranyadamo/Downloads/ghost-mux/src/layout.rs#L9) → [render_panel](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L1999) — shows panel content + toolbar
-- [HSplit](file:///Users/saranyadamo/Downloads/ghost-mux/src/layout.rs#L10) → `h_resizable(...)` with two `resizable_panel` children
-- [VSplit](file:///Users/saranyadamo/Downloads/ghost-mux/src/layout.rs#L15) → `v_resizable(...)` with two `resizable_panel` children
+- [HSplit](file:///Users/saranyadamo/Downloads/ghost-mux/src/layout.rs#L10) → [h_resizable](file:///Users/saranyadamo/Downloads/ghost-mux/patches/gpui-component/crates/ui/src/resizable/mod.rs#L15)(...) with two [resizable_panel](file:///Users/saranyadamo/Downloads/ghost-mux/patches/gpui-component/crates/ui/src/resizable/mod.rs#L25) children
+- [VSplit](file:///Users/saranyadamo/Downloads/ghost-mux/src/layout.rs#L15) → [v_resizable](file:///Users/saranyadamo/Downloads/ghost-mux/patches/gpui-component/crates/ui/src/resizable/mod.rs#L20)(...) with two [resizable_panel](file:///Users/saranyadamo/Downloads/ghost-mux/patches/gpui-component/crates/ui/src/resizable/mod.rs#L25) children
 
 Resizable split IDs are formed as `"h-{id}"` / `"v-{id}"` and must be unique across the whole tree (guaranteed because [DashboardView::next_id](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L281) is monotonic).
 
@@ -137,7 +137,7 @@ Dashboard panels can load different components represented by the [PanelContent]
 - **gpui-component** (longbridge/gpui-component) — resizable panels, theme tokens
 - **Theme**: always use `cx.theme()` tokens (`theme.background`, `theme.secondary`, `theme.foreground`, `theme.muted_foreground`, `theme.border`, `theme.accent`, `theme.muted`). Never hardcode colors except intentional palette values like green `rgb(0x57c994)` and red `rgb(0xf47067)`.
 - **`AnyElement`**: every helper returns `.into_any_element()` for composability
-- **`cx.listener`**: use `cx.listener(move |this, _, _window, cx| { ... })` for event handlers in render — captures by move, `this` is `&mut DashboardView`
+- **`cx.listener`**: use `cx.listener(move |this, _, _window, cx| { ... })` for event handlers in render — captures by move, `this` is `&mut` [DashboardView](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L244)
 - **Build**: `cargo run` (or `~/.cargo/bin/cargo run` if cargo is not on PATH)
 - **Zig toolchain**: pinned at **0.15.2**, cached repo-locally at `.tools/zig/toolchain/` (gitignored). Auto-bootstrapped by [tools/linux/ensure-zig.sh](file:///Users/saranyadamo/Downloads/ghost-mux/tools/linux/ensure-zig.sh) (or [tools/macos/ensure-zig.sh](file:///Users/saranyadamo/Downloads/ghost-mux/tools/macos/ensure-zig.sh)) and [tools/windows/ensure-zig.ps1](file:///Users/saranyadamo/Downloads/ghost-mux/tools/windows/ensure-zig.ps1) — no global Zig install required.
 
