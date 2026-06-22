@@ -78,14 +78,14 @@ Buttons dispatch mutations via `cx.listener(move |this, _, _, cx| { ... })`.
 
 ## Panel Content & Components
 
-Dashboard panels can load different components represented by the [PanelContent](file:///Users/saranyadamo/Downloads/ghost-mux/src/layout.rs#L124) enum. Rendering is routed by [render_panel_content](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L5158) to the respective rendering functions:
+Dashboard panels can load different components represented by the [PanelContent](file:///Users/saranyadamo/Downloads/ghost-mux/src/layout.rs#L124) enum. Rendering is routed by [render_panel_content](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L5177) to the respective rendering functions:
 
-- **Terminal**: Handled via [TerminalModel](file:///Users/saranyadamo/Downloads/ghost-mux/src/terminal/mod.rs#L39) which manages the PTY stream. Rendered via [render_terminal](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L6256) using `libghostty-vt` for terminal emulation.
-- **FileExplorer**: Built-in tree explorer rendered via [render_explorer](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L4832) supporting file tree actions (create, delete, rename).
-- **Git**: Sidebar/split component rendered via [render_git](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L5736) to track file diffs and tree changes.
+- **Terminal**: Handled via [TerminalModel](file:///Users/saranyadamo/Downloads/ghost-mux/src/terminal/mod.rs#L39) which manages the PTY stream. Rendered via [render_terminal](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L6275) using `libghostty-vt` for terminal emulation.
+- **FileExplorer**: Built-in tree explorer rendered via [render_explorer](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L4851) supporting file tree actions (create, delete, rename).
+- **Git**: Sidebar/split component rendered via [render_git](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L5755) to track file diffs and tree changes.
 - **Browser**: Integrates Cocoa's WKWebView wrapper [WebViewHandle](file:///Users/saranyadamo/Downloads/ghost-mux/src/browser.rs#L79) for macOS environments.
-- **Editor**: Text/code file editor rendered via [render_panel_editor](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L7307) with file state management, file save/editing, and diff modes (supporting [render_modal_editor](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L6704), [render_side_by_side_line](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L7114), and [render_inline_diff_line](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L7260)). LSP-backed autocompletion, definitions, and hover actions are powered by [LspClient](file:///Users/saranyadamo/Downloads/ghost-mux/src/lsp.rs#L31) using [GhostCompletionProvider](file:///Users/saranyadamo/Downloads/ghost-mux/src/lsp.rs#L351), [GhostHoverProvider](file:///Users/saranyadamo/Downloads/ghost-mux/src/lsp.rs#L405), and [GhostDefinitionProvider](file:///Users/saranyadamo/Downloads/ghost-mux/src/lsp.rs#L443).
-- **Diagnostics**: Workspace diagnostics panel rendered via [render_diagnostics_panel](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L5366) displaying code compilation warnings and errors.
+- **Editor**: Text/code file editor rendered via [render_panel_editor](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L7326) with file state management, file save/editing, and diff modes (supporting [render_modal_editor](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L6723), [render_side_by_side_line](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L7133), and [render_inline_diff_line](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L7279)). LSP-backed autocompletion, definitions, and hover actions are powered by [LspClient](file:///Users/saranyadamo/Downloads/ghost-mux/src/lsp.rs#L31) using [GhostCompletionProvider](file:///Users/saranyadamo/Downloads/ghost-mux/src/lsp.rs#L351), [GhostHoverProvider](file:///Users/saranyadamo/Downloads/ghost-mux/src/lsp.rs#L405), and [GhostDefinitionProvider](file:///Users/saranyadamo/Downloads/ghost-mux/src/lsp.rs#L443).
+- **Diagnostics**: Workspace diagnostics panel rendered via [render_diagnostics_panel](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L5385) displaying code compilation warnings and errors.
 
 ---
 
@@ -93,7 +93,7 @@ Dashboard panels can load different components represented by the [PanelContent]
 
 | File | Role |
 |------|------|
-| [src/main.rs](file:///Users/saranyadamo/Downloads/ghost-mux/src/main.rs) | App entry point — window setup, reference theme application via [apply_reference_theme](file:///Users/saranyadamo/Downloads/ghost-mux/src/main.rs#L16), and GPUI runner in [main](file:///Users/saranyadamo/Downloads/ghost-mux/src/main.rs#L45) |
+| [src/main.rs](file:///Users/saranyadamo/Downloads/ghost-mux/src/main.rs) | App entry point — window setup, reference theme application via [apply_reference_theme](file:///Users/saranyadamo/Downloads/ghost-mux/src/main.rs#L16), and GPUI runner in [main](file:///Users/saranyadamo/Downloads/ghost-mux/src/main.rs#L100) |
 | [src/dashboard.rs](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs) | Main view [DashboardView](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L244) holding [DashboardState](file:///Users/saranyadamo/Downloads/ghost-mux/src/dashboard.rs#L46) elements, handling pane splits/tabs, and core layout rendering |
 | [src/layout.rs](file:///Users/saranyadamo/Downloads/ghost-mux/src/layout.rs) | Layout binary tree model [PanelLayout](file:///Users/saranyadamo/Downloads/ghost-mux/src/layout.rs#L8) and panel component enum [PanelContent](file:///Users/saranyadamo/Downloads/ghost-mux/src/layout.rs#L124) |
 | [src/lsp.rs](file:///Users/saranyadamo/Downloads/ghost-mux/src/lsp.rs) | Language Server Protocol (LSP) integration: [LspClient](file:///Users/saranyadamo/Downloads/ghost-mux/src/lsp.rs#L31) manages process and JSON-RPC lifecycle, while [GhostCompletionProvider](file:///Users/saranyadamo/Downloads/ghost-mux/src/lsp.rs#L351), [GhostHoverProvider](file:///Users/saranyadamo/Downloads/ghost-mux/src/lsp.rs#L405), and [GhostDefinitionProvider](file:///Users/saranyadamo/Downloads/ghost-mux/src/lsp.rs#L443) hook IDE functions into editor buffers |
@@ -166,7 +166,10 @@ Zig is managed **inside this repo** — no system-wide install needed.
 
 ### Production Bundle
 
-The build scripts compile a `--release` binary, collect non-system runtime dylibs, and output a self-contained directory to `dist/<binary-name>/`.
+The build scripts compile a `--release` binary, collect non-system runtime dylibs, and package the output:
+- **macOS**: Generates a native self-contained app bundle at `dist/Ghost-mux.app` complete with `Info.plist` and compiled `AppIcon.icns`.
+- **Linux**: Outputs a self-contained directory to `dist/ghost-mux/`.
+- **Windows**: Outputs to `dist/ghost-mux/`.
 
 | Script | OS |
 |---|---|
@@ -175,7 +178,7 @@ The build scripts compile a `--release` binary, collect non-system runtime dylib
 | [tools/windows/build-production.ps1](file:///Users/saranyadamo/Downloads/ghost-mux/tools/windows/build-production.ps1) | Windows PowerShell |
 | [tools/windows/build-production.cmd](file:///Users/saranyadamo/Downloads/ghost-mux/tools/windows/build-production.cmd) | Windows cmd (delegates to ps1) |
 
-macOS: uses `otool` + `install_name_tool` to rewrite dylib paths under `lib/`.  
+macOS: packages the executable, libraries, settings, and icon into `dist/Ghost-mux.app`. On startup, if launched as a bundle (or from `/`), it pivots working directory to `~/Library/Application Support/ghost-mux` where it copies `settings.yaml` and saves layout state.
 Linux: uses `ldd` + `patchelf` (or `chrpath`, or a `run.sh` wrapper as fallback).  
 Windows: no bundling needed; PE binaries link against system DLLs.
 
@@ -188,7 +191,8 @@ Windows: no bundling needed; PE binaries link against system DLLs.
 | [tools/windows/run-production.ps1](file:///Users/saranyadamo/Downloads/ghost-mux/tools/windows/run-production.ps1) | Windows PowerShell |
 | [tools/windows/run-production.cmd](file:///Users/saranyadamo/Downloads/ghost-mux/tools/windows/run-production.cmd) | Windows cmd |
 
-Prefers `run.sh` wrapper inside the bundle (Linux fallback) over calling the binary directly.
+macOS: launches the `Ghost-mux.app` bundle via macOS `open`.
+Linux: prefers `run.sh` wrapper inside the bundle (Linux fallback) over calling the binary directly.
 
 ---
 
