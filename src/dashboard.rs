@@ -3630,11 +3630,17 @@ fn read_app_phys_footprint_kb() -> Option<u64> {
         use libc::{c_int, c_void, proc_pid_rusage, rusage_info_v2, RUSAGE_INFO_V2};
         let pid = std::process::id();
         let mut info: rusage_info_v2 = unsafe { std::mem::zeroed() };
-        // proc_pid_rusage takes *mut rusage_info_t which is *mut *mut c_void.
-        // We point that at a *mut c_void that in turn points at our struct.
-        let mut buf: *mut c_void = &mut info as *mut _ as *mut c_void;
+        // proc_pid_rusage expects the buffer argument to point directly to the
+        // rusage_info struct, even though the signature is typed as *mut rusage_info_t
+        // (which is *mut *mut c_void). Passing a pointer-to-pointer (like &mut buf)
+        // results in a stack buffer overflow as the kernel writes directly to the
+        // passed address. We cast the struct pointer directly to the expected FFI type.
         let ret = unsafe {
-            proc_pid_rusage(pid as c_int, RUSAGE_INFO_V2, &mut buf as *mut *mut c_void)
+            proc_pid_rusage(
+                pid as c_int,
+                RUSAGE_INFO_V2,
+                &mut info as *mut rusage_info_v2 as *mut *mut c_void,
+            )
         };
         if ret == 0 {
             return Some(info.ri_phys_footprint / 1024);

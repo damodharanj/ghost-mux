@@ -13,12 +13,17 @@ $CommitSha = "196b9259b562c26be97c92f88c798bbeefa9cb3d"
 if (-not (Test-Path $GpuiDir)) {
     Write-Host "==> Cloning gpui-component from upstream..."
     git clone $RepoUrl $GpuiDir
-    Set-Location $GpuiDir
-    Write-Host "==> Checking out specific commit: $CommitSha..."
-    git checkout $CommitSha
-    Write-Host "==> Applying patch gpui-component.patch..."
-    git apply $PatchFile
-    Write-Host "==> gpui-component setup successfully!"
+    $origDir = Get-Location
+    try {
+        Set-Location $GpuiDir
+        Write-Host "==> Checking out specific commit: $CommitSha..."
+        git checkout $CommitSha
+        Write-Host "==> Applying patch gpui-component.patch..."
+        git apply $PatchFile
+        Write-Host "==> gpui-component setup successfully!"
+    } finally {
+        Set-Location $origDir
+    }
 } else {
     Write-Host "==> gpui-component is already present."
 }

@@ -63,10 +63,17 @@ fn main() {
     let lib_dir = install_prefix.join("lib");
     let include_dir = install_prefix.join("include");
 
+    let is_msvc = target.contains("msvc");
+    let static_lib_name = if is_msvc {
+        "ghostty-vt.lib"
+    } else {
+        "libghostty-vt.a"
+    };
+
     assert!(
-        lib_dir.join("libghostty-vt.a").exists(),
+        lib_dir.join(static_lib_name).exists(),
         "expected static library at {}",
-        lib_dir.join("libghostty-vt.a").display()
+        lib_dir.join(static_lib_name).display()
     );
     assert!(
         include_dir.join("ghostty").join("vt.h").exists(),
@@ -81,7 +88,11 @@ fn main() {
     // The zig build produces dependency archives (highway, simdutf, utfcpp) in
     // .zig-cache/o/<hash>/ with hash-based paths. Walk the cache and emit a
     // link-search directive for each directory that contains one of them.
-    let dep_libs = ["libhighway.a", "libsimdutf.a", "libutfcpp.a"];
+    let dep_libs = if is_msvc {
+        vec!["highway.lib", "simdutf.lib", "utfcpp.lib"]
+    } else {
+        vec!["libhighway.a", "libsimdutf.a", "libutfcpp.a"]
+    };
     let zig_cache = ghostty_dir.join(".zig-cache").join("o");
     if zig_cache.is_dir() {
         for entry in std::fs::read_dir(&zig_cache).expect("read zig-cache/o") {
@@ -89,7 +100,11 @@ fn main() {
             let dir = entry.path();
             for lib in &dep_libs {
                 if dir.join(lib).exists() {
-                    let lib_name = lib.trim_start_matches("lib").trim_end_matches(".a");
+                    let lib_name = if is_msvc {
+                        lib.trim_end_matches(".lib")
+                    } else {
+                        lib.trim_start_matches("lib").trim_end_matches(".a")
+                    };
                     println!("cargo:rustc-link-search=native={}", dir.display());
                     println!("cargo:rustc-link-lib=static={lib_name}");
                 }
