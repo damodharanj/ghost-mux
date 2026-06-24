@@ -145,6 +145,10 @@ pub struct SerDashboard {
     pub split_size_ratios: std::collections::HashMap<usize, Vec<f32>>,
     #[serde(default)]
     pub current_dir: Option<PathBuf>,
+    #[serde(default)]
+    pub server_url: Option<String>,
+    #[serde(default)]
+    pub is_local: Option<bool>,
 }
 
 /// Root document written to `dashboard_state.yaml`.
@@ -157,6 +161,8 @@ pub struct DashboardPersistedState {
     /// Ordered list of dashboard IDs (defines sidebar order).
     pub dashboard_order: Vec<usize>,
     pub dashboards: Vec<SerDashboard>,
+    #[serde(default)]
+    pub remote_workspace_root: Option<std::path::PathBuf>,
 }
 
 // ---------------------------------------------------------------------------

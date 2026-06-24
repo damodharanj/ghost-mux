@@ -10,6 +10,7 @@ pub struct AppSettings {
     pub terminal: TerminalSettings,
     pub lsp: LspSettings,
     pub agents: Vec<AgentConfig>,
+    pub server_url: Option<String>,
 }
 
 impl Default for AppSettings {
@@ -39,6 +40,7 @@ impl Default for AppSettings {
                     enabled: true,
                 },
             ],
+            server_url: None,
         }
     }
 }

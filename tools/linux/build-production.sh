@@ -58,6 +58,15 @@ fi
 cp "$SOURCE_BIN" "$BIN_PATH"
 chmod +x "$BIN_PATH"
 
+SOURCE_SERVER_BIN="$PROJECT_ROOT/target/release/ghost-mux-server$EXEC_EXT"
+if [[ ! -f "$SOURCE_SERVER_BIN" ]]; then
+  echo "error: release server binary not found at $SOURCE_SERVER_BIN" >&2
+  exit 1
+fi
+SERVER_BIN_PATH="$APP_DIR/ghost-mux-server$EXEC_EXT"
+cp "$SOURCE_SERVER_BIN" "$SERVER_BIN_PATH"
+chmod +x "$SERVER_BIN_PATH"
+
 if [[ -f "$PROJECT_ROOT/settings.yaml" ]]; then
   cp "$PROJECT_ROOT/settings.yaml" "$APP_DIR/settings.yaml"
 fi
@@ -218,12 +227,15 @@ EOF
 }
 
 echo "==> Bundling runtime dependencies"
+SERVER_BIN_PATH="$APP_DIR/ghost-mux-server$EXEC_EXT"
 case "$OS_NAME" in
 Darwin)
   bundle_macos_deps "$BIN_PATH"
+  bundle_macos_deps "$SERVER_BIN_PATH"
   ;;
 Linux)
   bundle_linux_deps "$BIN_PATH"
+  bundle_linux_deps "$SERVER_BIN_PATH"
   ;;
 CYGWIN* | MINGW* | MSYS*)
   echo "==> Windows build detected; skipping dynamic library bundling"

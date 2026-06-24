@@ -38,6 +38,8 @@ pub struct LspClient {
     is_initialized: std::sync::atomic::AtomicBool,
     outgoing_queue: Mutex<Vec<String>>,
     spawn_error: Option<String>,
+    server_url: Option<String>,
+    lsp_id: Option<String>,
 }
 
 fn log_msg(msg: &str) {
@@ -55,9 +57,80 @@ impl LspClient {
         workspace_root: &Path,
         cmd: &[String],
         _language: &str,
+        server_url: Option<String>,
     ) -> Result<Arc<Self>> {
         if cmd.is_empty() {
             return Err(anyhow!("Empty server command"));
+        }
+
+        let (diagnostics_tx, diagnostics_rx) = bounded(128);
+        let next_id = Arc::new(Mutex::new(0));
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+
+        if let Some(ref url) = server_url {
+            let params = serde_json::json!({
+                "cwd": workspace_root.to_string_lossy().to_string(),
+                "command": cmd,
+            });
+            let mut lsp_id = None;
+            let mut spawn_error = None;
+            match crate::remote_api::call_remote_api(url, "lsp.start", params) {
+                Ok(res) => {
+                    if let Some(id) = res.get("lsp_id").and_then(|i| i.as_str()) {
+                        lsp_id = Some(id.to_string());
+                    } else {
+                        spawn_error = Some("Failed to get lsp_id from server".to_string());
+                    }
+                }
+                Err(e) => {
+                    spawn_error = Some(e);
+                }
+            }
+
+            let client = Arc::new(Self {
+                child: Mutex::new(None),
+                writer: Arc::new(Mutex::new(None)),
+                next_id,
+                pending,
+                diagnostics_tx: diagnostics_tx.clone(),
+                diagnostics_rx,
+                is_initialized: std::sync::atomic::AtomicBool::new(true),
+                outgoing_queue: Mutex::new(vec![]),
+                spawn_error,
+                server_url: Some(url.clone()),
+                lsp_id: lsp_id.clone(),
+            });
+
+            if client.spawn_error.is_none() {
+                if let Some(id) = lsp_id {
+                    let url_clone = url.clone();
+                    let tx_clone = diagnostics_tx.clone();
+                    std::thread::spawn(move || {
+                        let mut last_seen: HashMap<String, Value> = HashMap::new();
+                        loop {
+                            std::thread::sleep(std::time::Duration::from_millis(500));
+                            let params = serde_json::json!({ "lsp_id": id });
+                            if let Ok(res) = crate::remote_api::call_remote_api(&url_clone, "lsp.get_diagnostics", params) {
+                                if let Some(map) = res.as_object() {
+                                    for (uri_str, diags_val) in map {
+                                        let prev = last_seen.get(uri_str);
+                                        if prev != Some(diags_val) {
+                                            last_seen.insert(uri_str.clone(), diags_val.clone());
+                                            if let Ok(uri) = uri_str.parse::<Uri>() {
+                                                if let Ok(diags) = serde_json::from_value::<Vec<lsp_types::Diagnostic>>(diags_val.clone()) {
+                                                    let _ = tx_clone.send_blocking((uri, diags));
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }
+            }
+
+            return Ok(client);
         }
 
         log_msg(&format!("Starting LSP server command: {:?} in {:?}", cmd, workspace_root));
@@ -85,10 +158,6 @@ impl LspClient {
         };
 
         let writer = Arc::new(Mutex::new(stdin));
-        let next_id = Arc::new(Mutex::new(0));
-        let pending: Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value>>>>> = Arc::new(Mutex::new(HashMap::new()));
-        let (diagnostics_tx, diagnostics_rx) = bounded(128);
-
         let pending_clone = pending.clone();
         let diagnostics_tx_clone = diagnostics_tx.clone();
 
@@ -176,6 +245,8 @@ impl LspClient {
             is_initialized: std::sync::atomic::AtomicBool::new(false),
             outgoing_queue: Mutex::new(vec![]),
             spawn_error,
+            server_url: None,
+            lsp_id: None,
         });
 
         // Async Handshake (send initialize)
@@ -233,6 +304,25 @@ impl LspClient {
         method: &str,
         params: T,
     ) -> Result<oneshot::Receiver<Result<Value>>> {
+        if let (Some(ref url), Some(ref id)) = (&self.server_url, &self.lsp_id) {
+            let (tx, rx) = oneshot::channel();
+            let url_clone = url.clone();
+            let id_clone = id.clone();
+            let method_clone = method.to_string();
+            let params_val = serde_json::to_value(params)?;
+            std::thread::spawn(move || {
+                let req_params = serde_json::json!({
+                    "lsp_id": id_clone,
+                    "method": method_clone,
+                    "params": params_val,
+                });
+                let result = crate::remote_api::call_remote_api(&url_clone, "lsp.request", req_params)
+                    .map_err(|e| anyhow!("{}", e));
+                let _ = tx.send(result);
+            });
+            return Ok(rx);
+        }
+
         let id = {
             let mut next_id = self.next_id.lock().unwrap();
             *next_id += 1;
@@ -281,6 +371,22 @@ impl LspClient {
         method: &str,
         params: T,
     ) -> Result<()> {
+        if let (Some(ref url), Some(ref id)) = (&self.server_url, &self.lsp_id) {
+            let url_clone = url.clone();
+            let id_clone = id.clone();
+            let method_clone = method.to_string();
+            let params_val = serde_json::to_value(params)?;
+            std::thread::spawn(move || {
+                let req_params = serde_json::json!({
+                    "lsp_id": id_clone,
+                    "method": method_clone,
+                    "params": params_val,
+                });
+                let _ = crate::remote_api::call_remote_api(&url_clone, "lsp.notify", req_params);
+            });
+            return Ok(());
+        }
+
         let req = serde_json::json!({
             "jsonrpc": "2.0",
             "method": method,

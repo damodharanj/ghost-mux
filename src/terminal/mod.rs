@@ -44,8 +44,8 @@ pub struct TerminalModel {
     pub key_encoder: key::Encoder<'static>,
     pub key_event: key::Event<'static>,
 
-    pub writer: Arc<Mutex<Box<dyn Write + Send>>>,
-    pub pty_master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
+    pub writer: Option<Arc<Mutex<Box<dyn Write + Send>>>>,
+    pub pty_master: Option<Arc<Mutex<Box<dyn MasterPty + Send>>>>,
     pub shell_pid: Option<u32>,
 
     pub rows: usize,
@@ -68,72 +68,94 @@ pub struct TerminalModel {
     pub process_ongoing: bool,
     pub job_done: bool,
     pub running_agent: Option<String>,
+    pub server_url: Option<String>,
+    pub pty_id: Option<String>,
+}
+
+struct TerminalUpdate {
+    output: Vec<u8>,
+    running_agent: Option<String>,
 }
 
 impl TerminalModel {
-    pub fn new(tab_id: usize, hook_port: Option<u16>, cwd: Option<std::path::PathBuf>, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        tab_id: usize,
+        hook_port: Option<u16>,
+        cwd: Option<std::path::PathBuf>,
+        server_url: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let focus_handle = cx.focus_handle();
 
         // --- PTY ---
-        let pty_system = native_pty_system();
-        let pair = pty_system
-            .openpty(PtySize {
-                rows: ROWS as u16,
-                cols: COLS as u16,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .expect("Failed to open PTY");
+        let mut pty_id = None;
+        let mut writer = None;
+        let mut pty_master = None;
+        let mut shell_pid = None;
 
-        let mut cmd = CommandBuilder::new_default_prog();
-        if let Some(ref dir) = cwd {
-            if dir.exists() {
-                cmd.cwd(dir);
+        if let Some(ref url) = server_url {
+            let params = serde_json::json!({
+                "cwd": cwd.as_ref().map(|p| p.to_string_lossy().to_string()),
+                "cols": COLS,
+                "rows": ROWS,
+            });
+            match crate::remote_api::call_remote_api(url, "pty.spawn", params) {
+                Ok(res) => {
+                    if let Some(id) = res.get("pty_id").and_then(|i| i.as_str()) {
+                        pty_id = Some(id.to_string());
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Failed to spawn remote PTY: {}", e);
+                }
             }
-        }
-        cmd.env("TERM", "xterm-256color");
-        cmd.env("COLUMNS", COLS.to_string());
-        cmd.env("LINES", ROWS.to_string());
+        } else {
+            let pty_system = native_pty_system();
+            let pair = pty_system
+                .openpty(PtySize {
+                    rows: ROWS as u16,
+                    cols: COLS as u16,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                })
+                .expect("Failed to open PTY");
 
-        if let Some(port) = hook_port {
-            cmd.env("GHOST_MUX_HOOK_URL", &format!("http://127.0.0.1:{}/hook/{}", port, tab_id));
-            cmd.env("GHOST_MUX_TERMINAL_ID", &tab_id.to_string());
-            cmd.env("SUPERSET_HOST_AGENT_HOOK_URL", &format!("http://127.0.0.1:{}/hook/{}", port, tab_id));
-            cmd.env("SUPERSET_TERMINAL_ID", &tab_id.to_string());
-            cmd.env("SUPERSET_WORKSPACE_ID", "1");
-            cmd.env("SUPERSET_TAB_ID", &tab_id.to_string());
-            cmd.env("SUPERSET_PANE_ID", &tab_id.to_string());
-            if let Ok(home) = std::env::var("HOME") {
-                cmd.env("SUPERSET_HOME_DIR", &format!("{}/.ghost-mux", home));
+            let mut cmd = CommandBuilder::new_default_prog();
+            if let Some(ref dir) = cwd {
+                if dir.exists() {
+                    cmd.cwd(dir);
+                }
             }
+            cmd.env("TERM", "xterm-256color");
+            cmd.env("COLUMNS", COLS.to_string());
+            cmd.env("LINES", ROWS.to_string());
+
+            if let Some(port) = hook_port {
+                cmd.env("GHOST_MUX_HOOK_URL", &format!("http://127.0.0.1:{}/hook/{}", port, tab_id));
+                cmd.env("GHOST_MUX_TERMINAL_ID", &tab_id.to_string());
+                cmd.env("SUPERSET_HOST_AGENT_HOOK_URL", &format!("http://127.0.0.1:{}/hook/{}", port, tab_id));
+                cmd.env("SUPERSET_TERMINAL_ID", &tab_id.to_string());
+                cmd.env("SUPERSET_WORKSPACE_ID", "1");
+                cmd.env("SUPERSET_TAB_ID", &tab_id.to_string());
+                cmd.env("SUPERSET_PANE_ID", &tab_id.to_string());
+                if let Ok(home) = std::env::var("HOME") {
+                    cmd.env("SUPERSET_HOME_DIR", &format!("{}/.ghost-mux", home));
+                }
+            }
+
+            let child = pair
+                .slave
+                .spawn_command(cmd)
+                .expect("Failed to spawn shell");
+            shell_pid = child.process_id();
+            drop(pair.slave);
+
+            let writer_raw = pair.master.take_writer().expect("Failed to get PTY writer");
+            writer = Some(Arc::new(Mutex::new(writer_raw)));
+            pty_master = Some(Arc::new(Mutex::new(pair.master)));
         }
-
-        let child = pair
-            .slave
-            .spawn_command(cmd)
-            .expect("Failed to spawn shell");
-        let shell_pid = child.process_id();
-        drop(pair.slave);
-
-        let writer_raw = pair.master.take_writer().expect("Failed to get PTY writer");
-        let writer: Arc<Mutex<Box<dyn Write + Send>>> = Arc::new(Mutex::new(writer_raw));
-        let mut reader = pair
-            .master
-            .try_clone_reader()
-            .expect("Failed to clone PTY reader");
-        let pty_master: Arc<Mutex<Box<dyn MasterPty + Send>>> = Arc::new(Mutex::new(pair.master));
 
         // --- libghostty-vt terminal ---
-        let writer_for_cb = Arc::clone(&writer);
-
-        // Box the terminal BEFORE registering callbacks.
-        //
-        // `on_pty_write` stores `&self.vtable` (address of the VTable embedded
-        // inside Terminal) as raw userdata in the C library.  If the Terminal is
-        // a stack variable it gets moved (stack → TerminalModel → GPUI entity
-        // heap) and the stored pointer becomes dangling.  Heap-allocating via
-        // Box gives a stable address that survives all subsequent moves of the
-        // Box itself.
         let mut terminal = Box::new(
             Terminal::new(TerminalOptions {
                 cols: COLS as u16,
@@ -143,31 +165,72 @@ impl TerminalModel {
             .expect("Failed to create terminal"),
         );
 
-        // Write-back channel: terminal uses this to send responses (device status
-        // reports, mode queries, etc.) back into the PTY.
-        terminal
-            .on_pty_write(move |_term, data| {
-                if let Ok(mut w) = writer_for_cb.lock() {
-                    let _ = w.write_all(data);
-                }
-            })
-            .expect("Failed to register on_pty_write");
+        if server_url.is_none() {
+            let writer_for_cb = Arc::clone(writer.as_ref().unwrap());
+            terminal
+                .on_pty_write(move |_term, data| {
+                    if let Ok(mut w) = writer_for_cb.lock() {
+                        let _ = w.write_all(data);
+                    }
+                })
+                .expect("Failed to register on_pty_write");
+        }
 
         // main polling loop ---
-        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        let (tx, rx) = mpsc::channel::<TerminalUpdate>();
 
-        std::thread::spawn(move || {
-            let _child = child;
-            let mut buf = [0u8; 4096];
-            loop {
-                match reader.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        let _ = tx.send(buf[..n].to_vec());
+        if let Some(ref url) = server_url {
+            let url_clone = url.clone();
+            let pty_id_clone = pty_id.clone();
+            std::thread::spawn(move || {
+                let id_str = match pty_id_clone {
+                    Some(ref id) => id.clone(),
+                    None => return,
+                };
+                loop {
+                    std::thread::sleep(std::time::Duration::from_millis(30));
+                    let params = serde_json::json!({ "pty_id": id_str });
+                    match crate::remote_api::call_remote_api(&url_clone, "pty.read", params) {
+                        Ok(res) => {
+                            let output_bytes = res.get("output")
+                                .and_then(|o| o.as_str())
+                                .map(|s| s.as_bytes().to_vec())
+                                .unwrap_or_default();
+                            let running_agent = res.get("running_agent")
+                                .and_then(|a| a.as_str())
+                                .map(|s| s.to_string());
+                            
+                            if !output_bytes.is_empty() || running_agent.is_some() {
+                                let _ = tx.send(TerminalUpdate {
+                                    output: output_bytes,
+                                    running_agent,
+                                });
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Error polling remote PTY output: {}", e);
+                            std::thread::sleep(std::time::Duration::from_millis(500));
+                        }
                     }
                 }
-            }
-        });
+            });
+        } else {
+            let mut local_reader = pty_master.as_ref().unwrap().lock().unwrap().try_clone_reader().expect("Failed to clone local PTY reader");
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 4096];
+                loop {
+                    match local_reader.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            let _ = tx.send(TerminalUpdate {
+                                output: buf[..n].to_vec(),
+                                running_agent: None,
+                            });
+                        }
+                    }
+                }
+            });
+        }
 
         // Timer: drain channel, feed data to terminal, notify GPUI.
         cx.spawn(async move |entity, cx| loop {
@@ -175,24 +238,33 @@ impl TerminalModel {
                 .timer(std::time::Duration::from_millis(16))
                 .await;
             let mut buf: Vec<u8> = Vec::new();
-            while let Ok(chunk) = rx.try_recv() {
-                buf.extend_from_slice(&chunk);
+            let mut latest_agent = None;
+            let mut has_agent_update = false;
+            while let Ok(update) = rx.try_recv() {
+                buf.extend_from_slice(&update.output);
+                latest_agent = update.running_agent;
+                has_agent_update = true;
             }
-            if !buf.is_empty() {
+            if !buf.is_empty() || has_agent_update {
                 entity
                     .update(cx, |model, cx| {
-                        let is_at_bottom = if let Ok(sb) = model.terminal.scrollbar() {
-                            sb.offset + sb.len >= sb.total
-                        } else {
-                            true
-                        };
-                        model.terminal.vt_write(&buf);
-                        if is_at_bottom {
-                            let _ = model.terminal.scroll_viewport(ScrollViewport::Bottom);
+                        if !buf.is_empty() {
+                            let is_at_bottom = if let Ok(sb) = model.terminal.scrollbar() {
+                                sb.offset + sb.len >= sb.total
+                            } else {
+                                true
+                            };
+                            model.terminal.vt_write(&buf);
+                            if is_at_bottom {
+                                let _ = model.terminal.scroll_viewport(ScrollViewport::Bottom);
+                            }
+                            model.new_output = true;
+                            model.cursor_blink_visible = true;
+                            model.last_output_time = std::time::Instant::now();
                         }
-                        model.new_output = true;
-                        model.cursor_blink_visible = true;
-                        model.last_output_time = std::time::Instant::now();
+                        if has_agent_update && model.server_url.is_some() {
+                            model.running_agent = latest_agent;
+                        }
                         cx.notify();
                     })
                     .ok();
@@ -243,6 +315,8 @@ impl TerminalModel {
             process_ongoing: false,
             job_done: false,
             running_agent: None,
+            server_url,
+            pty_id,
         }
     }
 
@@ -408,8 +482,26 @@ impl TerminalModel {
     pub fn send_key(&mut self, bytes: &[u8]) {
         self.needs_attention = false;
         self.job_done = false;
-        if let Ok(mut w) = self.writer.lock() {
-            let _ = w.write_all(bytes);
+        if let Some(ref url) = self.server_url {
+            if let Some(ref pty_id) = self.pty_id {
+                let url_clone = url.clone();
+                let pty_id_clone = pty_id.clone();
+                let bytes_vec = bytes.to_vec();
+                std::thread::spawn(move || {
+                    let input = String::from_utf8_lossy(&bytes_vec).into_owned();
+                    let params = serde_json::json!({
+                        "pty_id": pty_id_clone,
+                        "input": input,
+                    });
+                    let _ = crate::remote_api::call_remote_api(&url_clone, "pty.write", params);
+                });
+            }
+        } else {
+            if let Some(ref w_lock) = self.writer {
+                if let Ok(mut w) = w_lock.lock() {
+                    let _ = w.write_all(bytes);
+                }
+            }
         }
     }
 
@@ -512,13 +604,30 @@ impl TerminalModel {
         self.rows = rows;
         self.cols = cols;
         let _ = self.terminal.resize(cols as u16, rows as u16, 0, 0);
-        if let Ok(master) = self.pty_master.lock() {
-            let _ = master.resize(PtySize {
-                rows: rows as u16,
-                cols: cols as u16,
-                pixel_width: 0,
-                pixel_height: 0,
-            });
+        if let Some(ref url) = self.server_url {
+            if let Some(ref pty_id) = self.pty_id {
+                let url_clone = url.clone();
+                let pty_id_clone = pty_id.clone();
+                std::thread::spawn(move || {
+                    let params = serde_json::json!({
+                        "pty_id": pty_id_clone,
+                        "cols": cols,
+                        "rows": rows,
+                    });
+                    let _ = crate::remote_api::call_remote_api(&url_clone, "pty.resize", params);
+                });
+            }
+        } else {
+            if let Some(ref master_lock) = self.pty_master {
+                if let Ok(master) = master_lock.lock() {
+                    let _ = master.resize(PtySize {
+                        rows: rows as u16,
+                        cols: cols as u16,
+                        pixel_width: 0,
+                        pixel_height: 0,
+                    });
+                }
+            }
         }
     }
 
@@ -679,4 +788,17 @@ fn unshifted_codepoint(key: &str) -> char {
         return key.chars().next().unwrap_or('\0');
     }
     '\0'
+}
+
+impl Drop for TerminalModel {
+    fn drop(&mut self) {
+        if let (Some(ref url), Some(ref pty_id)) = (&self.server_url, &self.pty_id) {
+            let url_clone = url.clone();
+            let pty_id_clone = pty_id.clone();
+            std::thread::spawn(move || {
+                let params = serde_json::json!({ "pty_id": pty_id_clone });
+                let _ = crate::remote_api::call_remote_api(&url_clone, "pty.close", params);
+            });
+        }
+    }
 }

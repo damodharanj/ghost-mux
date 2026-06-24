@@ -23,6 +23,8 @@ mkdir -p "$RESOURCES_DIR"
 # 3. Copy files from dist/ghost-mux/
 cp "$PROJECT_ROOT/dist/ghost-mux/ghost-mux" "$MACOS_DIR/ghost-mux"
 chmod +x "$MACOS_DIR/ghost-mux"
+cp "$PROJECT_ROOT/dist/ghost-mux/ghost-mux-server" "$MACOS_DIR/ghost-mux-server"
+chmod +x "$MACOS_DIR/ghost-mux-server"
 cp -R "$PROJECT_ROOT/dist/ghost-mux/lib" "$MACOS_DIR/lib"
 cp "$PROJECT_ROOT/dist/ghost-mux/settings.yaml" "$RESOURCES_DIR/settings.yaml"
 if [ -d "$PROJECT_ROOT/dist/ghost-mux/assets" ]; then

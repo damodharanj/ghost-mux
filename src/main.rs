@@ -4,6 +4,7 @@ mod hook_server;
 mod layout;
 mod lsp;
 mod persist;
+mod remote_api;
 mod settings;
 mod terminal;
 
@@ -99,6 +100,21 @@ fn quit(_: &Quit, cx: &mut App) {
 
 fn main() {
     setup_working_directory();
+
+    // Parse --server or -s from command line arguments
+    let args: Vec<String> = std::env::args().collect();
+    let mut server_arg = None;
+    let mut i = 1;
+    while i < args.len() {
+        if args[i] == "--server" || args[i] == "-s" {
+            if i + 1 < args.len() {
+                server_arg = Some(args[i + 1].clone());
+                i += 1;
+            }
+        }
+        i += 1;
+    }
+
     let app = gpui_platform::application().with_assets(gpui_component_assets::Assets);
     app.run(move |cx| {
         cx.on_action(quit);
@@ -110,10 +126,13 @@ fn main() {
             items: vec![MenuItem::action("Quit", Quit)],
             disabled: false,
         }]);
-        let settings = AppSettings::load_from_file(Path::new("settings.yaml")).unwrap_or_else(|err| {
+        let mut settings = AppSettings::load_from_file(Path::new("settings.yaml")).unwrap_or_else(|err| {
             eprintln!("Unable to load settings.yaml, using defaults: {err:#}");
             AppSettings::default()
         });
+        if let Some(url) = server_arg {
+            settings.server_url = Some(url);
+        }
         gpui_component::init(cx);
         Theme::change(ThemeMode::Dark, None, cx);
         apply_reference_theme(&settings.theme, cx);

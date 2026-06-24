@@ -58,6 +58,12 @@ if (-not (Test-Path $SourceBin)) {
 }
 Copy-Item -Path $SourceBin -Destination $BinPath -Force
 
+$SourceServerBin = Join-Path $ProjectRoot "target/release/ghost-mux-server.exe"
+if (-not (Test-Path $SourceServerBin)) {
+    throw "release server binary not found at $SourceServerBin"
+}
+Copy-Item -Path $SourceServerBin -Destination (Join-Path $AppDir "ghost-mux-server.exe") -Force
+
 $settingsPath = Join-Path $ProjectRoot "settings.yaml"
 if (Test-Path $settingsPath) {
     Copy-Item -Path $settingsPath -Destination (Join-Path $AppDir "settings.yaml") -Force

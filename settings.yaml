@@ -24,7 +24,7 @@ terminal:
   line_height: 15.0
   char_width: 7.2
   resize_debounce_ms: 150
-
+server_url: "http://127.0.0.1:3030"
 lsp:
   enabled: true
   servers:

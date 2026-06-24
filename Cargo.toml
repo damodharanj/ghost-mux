@@ -28,6 +28,10 @@ objc = "0.2.7"
 raw-window-handle = "0.6.2"
 
 
+[[bin]]
+name = "ghost-mux-server"
+path = "src/bin/server.rs"
+
 [patch.crates-io]
 libghostty-vt-sys = { path = "patches/libghostty-vt-sys" }
 

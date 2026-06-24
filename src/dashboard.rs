@@ -19,6 +19,10 @@ use crate::persist::{
 };
 use crate::settings::{AppSettings, LayoutSettings, TerminalSettings};
 use crate::terminal::{TerminalModel, TerminalShiftTab, TerminalTab};
+use crate::remote_api::{
+    read_file_content, write_file_content, rename_file, create_file, create_dir,
+    delete_file_or_dir, canonicalize_path, read_directory, call_remote_api
+};
 
 actions!(editor, [SaveFile]);
 
@@ -49,6 +53,8 @@ pub struct DashboardState {
     pub layout: PanelLayout,
     pub panel_tabs: HashMap<usize, PanelTabs>,
     pub current_dir: PathBuf,
+    pub server_url: Option<String>,
+    pub is_local: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -91,6 +97,7 @@ pub struct ModalEditorState {
     pub is_diff: bool,
     pub side_by_side: bool,
     pub scroll_handle: UniformListScrollHandle,
+    pub dashboard_id: usize,
 }
 
 impl std::fmt::Debug for ModalEditorState {
@@ -294,6 +301,8 @@ pub struct DashboardView {
     pub lsp_document_versions: HashMap<PathBuf, i32>,
     pub last_lsp_statuses: HashMap<(PathBuf, String), String>,
     pub lsp_loading: HashMap<PathBuf, bool>,
+    pub server_url: Option<String>,
+    pub remote_workspace_root: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -316,6 +325,12 @@ enum SettingsNumberField {
 impl DashboardView {
     pub fn new(window: &mut Window, settings: AppSettings, cx: &mut Context<Self>) -> Self {
         let persist_path = PathBuf::from("dashboard_state.yaml");
+        let server_url = settings.server_url.clone();
+        let remote_workspace_root = if server_url.is_some() {
+            std::env::current_dir().ok()
+        } else {
+            None
+        };
         let mut view = Self {
             dashboards: HashMap::new(),
             dashboard_order: vec![],
@@ -361,6 +376,8 @@ impl DashboardView {
             lsp_document_versions: HashMap::new(),
             last_lsp_statuses: HashMap::new(),
             lsp_loading: HashMap::new(),
+            server_url,
+            remote_workspace_root,
         };
 
         let (tx, rx) = std::sync::mpsc::channel();
@@ -391,7 +408,8 @@ impl DashboardView {
         };
 
         if !restored {
-            let first_dashboard = view.create_dashboard("Dashboard 1".to_string(), window, cx);
+            let is_local = view.server_url.is_none();
+            let first_dashboard = view.create_dashboard_with_mode("Dashboard 1".to_string(), is_local, window, cx);
             view.active_dashboard_id = first_dashboard;
         }
 
@@ -413,6 +431,31 @@ impl DashboardView {
         })
         .detach();
         view
+    }
+
+    pub fn is_dashboard_remote(&self, dashboard: &DashboardState) -> bool {
+        !dashboard.is_local && dashboard.server_url.is_some()
+    }
+
+    pub fn get_tab_server_url(&self, tab_id: usize, path_fallback: Option<&Path>) -> Option<String> {
+        if let Some((db_id, _)) = self.find_panel_for_tab(tab_id) {
+            if let Some(dashboard) = self.dashboards.get(&db_id) {
+                return dashboard.server_url.clone();
+            }
+        }
+        if let Some(path) = path_fallback {
+            return self.resolve_path_server_url(path);
+        }
+        None
+    }
+
+    pub fn resolve_path_server_url(&self, path: &Path) -> Option<String> {
+        if let (Some(ref url), Some(ref root)) = (&self.server_url, &self.remote_workspace_root) {
+            if path.starts_with(root) {
+                return Some(url.clone());
+            }
+        }
+        None
     }
 
     // -----------------------------------------------------------------------
@@ -471,6 +514,8 @@ impl DashboardView {
                     panels,
                     split_size_ratios,
                     current_dir: Some(d.current_dir.clone()),
+                    server_url: d.server_url.clone(),
+                    is_local: Some(d.is_local),
                 }
             })
             .collect();
@@ -480,6 +525,7 @@ impl DashboardView {
             active_dashboard_id: self.active_dashboard_id,
             dashboard_order: self.dashboard_order.clone(),
             dashboards,
+            remote_workspace_root: self.remote_workspace_root.clone(),
         };
 
         if let Err(err) = state.save_to_file(&self.persist_path) {
@@ -506,6 +552,10 @@ impl DashboardView {
         self.next_id = state.next_id;
         self.active_dashboard_id = state.active_dashboard_id;
         self.dashboard_order = state.dashboard_order;
+        self.remote_workspace_root = state.remote_workspace_root;
+        if self.remote_workspace_root.is_none() && self.server_url.is_some() {
+            self.remote_workspace_root = std::env::current_dir().ok();
+        }
 
         for ser_dashboard in state.dashboards {
             let layout: PanelLayout = ser_dashboard.layout.into();
@@ -549,6 +599,23 @@ impl DashboardView {
                 self.pending_split_ratios.insert(split_id, ratios);
             }
 
+            let is_local = ser_dashboard.is_local.unwrap_or(false);
+            let server_url = if is_local {
+                None
+            } else {
+                ser_dashboard.server_url.clone().or_else(|| {
+                    if let (Some(ref url), Some(ref root)) = (&self.server_url, &self.remote_workspace_root) {
+                        if current_dir.starts_with(root) {
+                            Some(url.clone())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                })
+            };
+
             self.dashboards.insert(
                 ser_dashboard.id,
                 DashboardState {
@@ -557,6 +624,8 @@ impl DashboardView {
                     layout,
                     panel_tabs,
                     current_dir,
+                    server_url,
+                    is_local,
                 },
             );
         }
@@ -569,9 +638,10 @@ impl DashboardView {
         }
     }
 
-    fn create_dashboard(
+    fn create_dashboard_with_mode(
         &mut self,
         title: String,
+        is_local: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> usize {
@@ -580,9 +650,15 @@ impl DashboardView {
         let tab_id = self.next_id + 2;
         self.next_id += 3;
 
-        let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-
-        self.ensure_content_entity(tab_id, PanelContent::Terminal, Some(current_dir.clone()), window, cx);
+        let current_dir = if is_local {
+            std::env::var("HOME")
+                .or_else(|_| std::env::var("USERPROFILE"))
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+        } else {
+            self.remote_workspace_root.clone()
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+        };
 
         let mut panel_tabs = HashMap::new();
         panel_tabs.insert(
@@ -597,6 +673,12 @@ impl DashboardView {
             },
         );
 
+        let server_url = if is_local {
+            None
+        } else {
+            self.server_url.clone()
+        };
+
         self.dashboards.insert(
             dashboard_id,
             DashboardState {
@@ -604,10 +686,14 @@ impl DashboardView {
                 title,
                 layout: PanelLayout::Leaf(panel_id),
                 panel_tabs,
-                current_dir,
+                current_dir: current_dir.clone(),
+                server_url,
+                is_local,
             },
         );
         self.dashboard_order.push(dashboard_id);
+
+        self.ensure_content_entity(tab_id, PanelContent::Terminal, Some(current_dir), window, cx);
 
         dashboard_id
     }
@@ -616,13 +702,31 @@ impl DashboardView {
         self.dashboards.get(&self.active_dashboard_id)
     }
 
-    pub fn add_dashboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let title = format!("Dashboard {}", self.dashboard_order.len() + 1);
-        let new_id = self.create_dashboard(title, window, cx);
+    pub fn add_local_dashboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let title = format!("Local Dashboard {}", self.dashboard_order.len() + 1);
+        let new_id = self.create_dashboard_with_mode(title, true, window, cx);
         self.active_dashboard_id = new_id;
         self.ensure_dashboard_lsps(new_id, window, cx);
         self.persist(cx);
         cx.notify();
+    }
+
+    pub fn add_remote_dashboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let title = format!("Remote Dashboard {}", self.dashboard_order.len() + 1);
+        let new_id = self.create_dashboard_with_mode(title, false, window, cx);
+        self.active_dashboard_id = new_id;
+        self.ensure_dashboard_lsps(new_id, window, cx);
+        self.persist(cx);
+        cx.notify();
+    }
+
+    pub fn add_dashboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let is_local = self.server_url.is_none();
+        if is_local {
+            self.add_local_dashboard(window, cx);
+        } else {
+            self.add_remote_dashboard(window, cx);
+        }
     }
 
     pub fn switch_dashboard(&mut self, dashboard_id: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -769,7 +873,8 @@ impl DashboardView {
 
         let key = (current_dir.clone(), lang.to_string());
         if !self.lsp_clients.contains_key(&key) {
-            if let Ok(client) = crate::lsp::LspClient::start(&current_dir, cmd, lang) {
+            let lsp_server_url = dashboard.server_url.clone();
+            if let Ok(client) = crate::lsp::LspClient::start(&current_dir, cmd, lang, lsp_server_url) {
                 self.lsp_clients.insert(key.clone(), client.clone());
 
                 let diagnostics_rx = client.diagnostics_rx.clone();
@@ -1074,6 +1179,9 @@ impl DashboardView {
 
         let mut dashboard_cwds_changed = false;
         let mut lsps_to_ensure = Vec::new();
+        let server_url = self.server_url.clone();
+        let remote_workspace_root = self.remote_workspace_root.clone();
+
         for d in self.dashboards.values_mut() {
             let mut new_dir = None;
             for panel in d.panel_tabs.values() {
@@ -1099,7 +1207,20 @@ impl DashboardView {
             }
             if let Some(dir) = new_dir {
                 if d.current_dir != dir {
-                    d.current_dir = dir;
+                    d.current_dir = dir.clone();
+                    d.server_url = if d.is_local {
+                        None
+                    } else {
+                        if let (Some(ref url), Some(ref root)) = (&server_url, &remote_workspace_root) {
+                            if dir.starts_with(root) {
+                                Some(url.clone())
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    };
                     dashboard_cwds_changed = true;
                     lsps_to_ensure.push(d.id);
                 }
@@ -1184,70 +1305,107 @@ impl DashboardView {
             }
         });
 
-        let is_git = std::process::Command::new("git")
-            .arg("rev-parse")
-            .arg("--is-inside-work-tree")
-            .current_dir(&cwd)
-            .output();
-
-        let new_state = match is_git {
-            Ok(output) if output.status.success() => {
-                let branch_output = std::process::Command::new("git")
-                    .arg("rev-parse")
-                    .arg("--abbrev-ref")
-                    .arg("HEAD")
-                    .current_dir(&cwd)
-                    .output();
-                let branch = if let Ok(out) = branch_output {
-                    if out.status.success() {
-                        String::from_utf8_lossy(&out.stdout).trim().to_string()
-                    } else {
-                        "HEAD".to_string()
-                    }
-                } else {
-                    "HEAD".to_string()
-                };
-
-                let mut files = Vec::new();
-                if let Ok(status_output) = std::process::Command::new("git")
-                    .arg("status")
-                    .arg("--porcelain")
-                    .current_dir(&cwd)
-                    .output()
-                {
-                    if status_output.status.success() {
-                        let stdout = String::from_utf8_lossy(&status_output.stdout);
-                        for line in stdout.lines() {
-                            if line.len() > 3 {
-                                let status = line[0..2].trim().to_string();
-                                let path = line[3..].to_string();
-                                files.push(GitDiffFile { status, path });
+        let new_state = if let Some(ref url) = self.get_tab_server_url(tab_id, Some(&cwd)) {
+            let params = serde_json::json!({ "cwd": cwd.to_string_lossy().to_string() });
+            match call_remote_api(url, "git.status", params) {
+                Ok(res) => {
+                    let branch = res.get("branch").and_then(|b| b.as_str()).unwrap_or("HEAD").to_string();
+                    let mut files = Vec::new();
+                    if let Some(arr) = res.get("files").and_then(|f| f.as_array()) {
+                        for item in arr {
+                            if let (Some(status), Some(path)) = (
+                                item.get("status").and_then(|s| s.as_str()),
+                                item.get("path").and_then(|p| p.as_str()),
+                            ) {
+                                files.push(GitDiffFile {
+                                    status: status.to_string(),
+                                    path: path.to_string(),
+                                });
                             }
                         }
                     }
+                    GitDiffState {
+                        branch,
+                        files,
+                        diff: String::new(),
+                        error: None,
+                    }
                 }
+                Err(e) => {
+                    GitDiffState {
+                        branch: String::new(),
+                        files: Vec::new(),
+                        diff: String::new(),
+                        error: Some(e),
+                    }
+                }
+            }
+        } else {
+            let is_git = std::process::Command::new("git")
+                .arg("rev-parse")
+                .arg("--is-inside-work-tree")
+                .current_dir(&cwd)
+                .output();
 
-                GitDiffState {
-                    branch,
-                    files,
-                    diff: String::new(),
-                    error: None,
+            match is_git {
+                Ok(output) if output.status.success() => {
+                    let branch_output = std::process::Command::new("git")
+                        .arg("rev-parse")
+                        .arg("--abbrev-ref")
+                        .arg("HEAD")
+                        .current_dir(&cwd)
+                        .output();
+                    let branch = if let Ok(out) = branch_output {
+                        if out.status.success() {
+                            String::from_utf8_lossy(&out.stdout).trim().to_string()
+                        } else {
+                            "HEAD".to_string()
+                        }
+                    } else {
+                        "HEAD".to_string()
+                    };
+
+                    let mut files = Vec::new();
+                    if let Ok(status_output) = std::process::Command::new("git")
+                        .arg("status")
+                        .arg("--porcelain")
+                        .current_dir(&cwd)
+                        .output()
+                    {
+                        if status_output.status.success() {
+                            let stdout = String::from_utf8_lossy(&status_output.stdout);
+                            for line in stdout.lines() {
+                                if line.len() > 3 {
+                                    let status = line[0..2].trim().to_string();
+                                    let path = line[3..].to_string();
+                                    files.push(GitDiffFile { status, path });
+                                }
+                            }
+                        }
+                    }
+
+                    GitDiffState {
+                        branch,
+                        files,
+                        diff: String::new(),
+                        error: None,
+                    }
                 }
-            }
-            Ok(_) => {
-                GitDiffState {
-                    branch: String::new(),
-                    files: Vec::new(),
-                    diff: String::new(),
-                    error: Some("Not a git repository".to_string()),
+                Ok(_) => {
+                    GitDiffState {
+                        branch: String::new(),
+                        files: Vec::new(),
+                        diff: String::new(),
+                        error: Some("Not a git repository".to_string()),
+                    }
                 }
-            }
-            Err(_) => {
-                GitDiffState {
-                    branch: String::new(),
-                    files: Vec::new(),
-                    diff: String::new(),
-                    error: Some("git command not found".to_string()),
+                Err(_) => {
+                    GitDiffState {
+                        branch: String::new(),
+                        files: Vec::new(),
+                        diff: String::new(),
+                        error: Some("git command not found".to_string()),
+                    }
                 }
             }
         };
@@ -1285,16 +1443,17 @@ impl DashboardView {
         if let Some(ref path) = cwd {
             self.terminal_cwds.entry(tab_id).or_insert_with(|| path.clone());
         }
+        let tab_server_url = self.get_tab_server_url(tab_id, cwd.as_deref());
         match content {
             PanelContent::Terminal => {
                 if !self.terminals.contains_key(&tab_id) {
-                    let terminal = cx.new(|cx| TerminalModel::new(tab_id, self.hook_port, cwd, cx));
+                    let terminal = cx.new(|cx| TerminalModel::new(tab_id, self.hook_port, cwd, tab_server_url.clone(), cx));
                     self.terminals.insert(tab_id, terminal);
                 }
             }
             PanelContent::FileExplorer => {
                 if !self.terminals.contains_key(&tab_id) {
-                    let terminal = cx.new(|cx| TerminalModel::new(tab_id, self.hook_port, cwd, cx));
+                    let terminal = cx.new(|cx| TerminalModel::new(tab_id, self.hook_port, cwd, tab_server_url, cx));
                     self.terminals.insert(tab_id, terminal);
                 }
                 self.refresh_git_diff(tab_id, cx);
@@ -1365,7 +1524,8 @@ impl DashboardView {
                             std::env::current_dir().unwrap_or_default()
                         });
                         let status_str = status.clone().unwrap_or_default();
-                        let diff_content = self.get_file_diff(&path, &status_str, &cwd);
+                        let path_server_url = self.get_tab_server_url(tab_id, Some(&cwd));
+                        let diff_content = self.get_file_diff(&path, &status_str, &cwd, &path_server_url);
                         let ed = cx.new(|cx| {
                             let mut e = InputState::new(window, cx)
                                 .multi_line(true)
@@ -1377,7 +1537,8 @@ impl DashboardView {
                         });
                         (ed, None)
                     } else {
-                        let content = std::fs::read_to_string(&path).unwrap_or_default();
+                        let path_server_url = self.get_tab_server_url(tab_id, Some(&path));
+                        let content = read_file_content(&path, &path_server_url).unwrap_or_default();
                         let lang = detect_language(&path);
                         let ed = cx.new(|cx| {
                             let mut e = InputState::new(window, cx)
@@ -2112,6 +2273,7 @@ impl DashboardView {
                         &self.settings.terminal,
                         &self.settings.layout,
                         self.explorer_edit.as_ref(),
+                        &dashboard.server_url,
                         window,
                         cx,
                     ))
@@ -2175,11 +2337,15 @@ impl DashboardView {
         };
 
         let target = dest_dir.join(name);
-        if target == source || target.exists() {
+        let path_server_url = self.get_tab_server_url(tab_id, Some(&source));
+        if path_server_url.is_none() && (target == source || target.exists()) {
+            return;
+        }
+        if path_server_url.is_some() && target == source {
             return;
         }
 
-        if let Err(e) = std::fs::rename(&source, &target) {
+        if let Err(e) = rename_file(&source, &target, &path_server_url) {
             eprintln!("Failed to move item: {:?}", e);
         } else {
             self.refresh_git_diff(tab_id, cx);
@@ -2244,7 +2410,8 @@ impl DashboardView {
                 match edit.edit_type {
                     ExplorerEditType::CreateFile { parent_path } => {
                         let new_path = parent_path.join(&name);
-                        if let Err(e) = std::fs::File::create(&new_path) {
+                        let path_server_url = self.get_tab_server_url(tab_id, Some(&new_path));
+                        if let Err(e) = create_file(&new_path, &path_server_url) {
                             eprintln!("Failed to create file: {:?}", e);
                         } else {
                             let expanded = self.expanded_paths.entry(tab_id).or_default();
@@ -2253,7 +2420,8 @@ impl DashboardView {
                     }
                     ExplorerEditType::CreateFolder { parent_path } => {
                         let new_path = parent_path.join(&name);
-                        if let Err(e) = std::fs::create_dir_all(&new_path) {
+                        let path_server_url = self.get_tab_server_url(tab_id, Some(&new_path));
+                        if let Err(e) = create_dir(&new_path, &path_server_url) {
                             eprintln!("Failed to create folder: {:?}", e);
                         } else {
                             let expanded = self.expanded_paths.entry(tab_id).or_default();
@@ -2263,7 +2431,8 @@ impl DashboardView {
                     ExplorerEditType::Rename { path } => {
                         if let Some(parent) = path.parent() {
                             let new_path = parent.join(name);
-                            if let Err(e) = std::fs::rename(&path, &new_path) {
+                            let path_server_url = self.get_tab_server_url(tab_id, Some(&path));
+                            if let Err(e) = rename_file(&path, &new_path, &path_server_url) {
                                 eprintln!("Failed to rename: {:?}", e);
                             }
                         }
@@ -2277,7 +2446,7 @@ impl DashboardView {
 
     pub fn open_explorer_file(
         &mut self,
-        _dashboard_id: usize,
+        dashboard_id: usize,
         _panel_id: usize,
         _tab_id: usize,
         path: PathBuf,
@@ -2287,7 +2456,8 @@ impl DashboardView {
         if let Some(editor_panel_id) = self.editor_panels.iter().cloned().next() {
             self.open_file_in_panel(editor_panel_id, path, false, None, window, cx);
         } else {
-            if let Ok(content) = std::fs::read_to_string(&path) {
+            let path_server_url = self.dashboards.get(&dashboard_id).and_then(|d| d.server_url.clone());
+            if let Ok(content) = read_file_content(&path, &path_server_url) {
                 let lang = detect_language(&path);
                 let editor = cx.new(|cx| {
                     let mut e = InputState::new(window, cx)
@@ -2308,6 +2478,7 @@ impl DashboardView {
                     is_diff: false,
                     side_by_side: false,
                     scroll_handle: UniformListScrollHandle::new(),
+                    dashboard_id,
                 });
                 cx.notify();
             }
@@ -2319,7 +2490,20 @@ impl DashboardView {
         cx.notify();
     }
 
-    pub fn get_file_diff(&self, path: &std::path::Path, status: &str, cwd: &std::path::Path) -> String {
+    pub fn get_file_diff(&self, path: &std::path::Path, status: &str, cwd: &std::path::Path, path_server_url: &Option<String>) -> String {
+        if let Some(ref url) = path_server_url {
+            let params = serde_json::json!({
+                "cwd": cwd.to_string_lossy().to_string(),
+                "path": path.to_string_lossy().to_string(),
+            });
+            match call_remote_api(url, "git.diff", params) {
+                Ok(res) => {
+                    return res.get("diff").and_then(|d| d.as_str()).unwrap_or("").to_string();
+                }
+                Err(e) => return format!("Error running git diff: {}", e),
+            }
+        }
+
         if status == "??" {
             if let Ok(out) = std::process::Command::new("git")
                 .arg("diff")
@@ -2423,7 +2607,8 @@ impl DashboardView {
                 }
             });
             
-            let diff_content = self.get_file_diff(&path, &status, &cwd);
+            let path_server_url = self.get_tab_server_url(tab_id, Some(&cwd));
+            let diff_content = self.get_file_diff(&path, &status, &cwd, &path_server_url);
             let editor = cx.new(|cx| {
                 let mut e = InputState::new(window, cx)
                     .multi_line(true)
@@ -2438,12 +2623,18 @@ impl DashboardView {
                 window.focus(&focus_handle, cx);
                 crate::browser::restore_gpui_focus(window);
             });
+            let dashboard_id = if let Some((db_id, _)) = self.find_panel_for_tab(tab_id) {
+                db_id
+            } else {
+                self.active_dashboard_id
+            };
             self.modal_editor = Some(ModalEditorState {
                 path,
                 editor,
                 is_diff: true,
                 side_by_side: false,
                 scroll_handle: UniformListScrollHandle::new(),
+                dashboard_id,
             });
             cx.notify();
         }
@@ -2568,7 +2759,12 @@ impl DashboardView {
         cx: &mut Context<Self>,
     ) {
         let content = editor.read(cx).text().to_string();
-        if let Err(err) = std::fs::write(path, &content) {
+        let path_server_url = if let Some(ref me) = self.modal_editor {
+            self.dashboards.get(&me.dashboard_id).and_then(|d| d.server_url.clone())
+        } else {
+            self.resolve_path_server_url(path)
+        };
+        if let Err(err) = write_file_content(path, &content, &path_server_url) {
             eprintln!("Failed to save file: {:?}", err);
         } else {
             println!("Saved file successfully: {:?}", path);
@@ -2635,7 +2831,7 @@ impl DashboardView {
             let mut matched_clients: Vec<(&String, &std::sync::Arc<crate::lsp::LspClient>)> = self.lsp_clients
                 .iter()
                 .filter(|((workspace_root, _), _)| {
-                    paths_match(workspace_root, &dashboard.current_dir)
+                    paths_match(workspace_root, &dashboard.current_dir, &dashboard.server_url)
                 })
                 .map(|((_, name), client)| (name, client))
                 .collect();
@@ -2989,13 +3185,19 @@ impl Render for DashboardView {
                             "Delete",
                             cx.listener(move |this, _: &ClickEvent, _window, cx| {
                                 this.explorer_context_menu = None;
-                                if p_delete.is_dir() {
-                                    if let Err(e) = std::fs::remove_dir_all(&p_delete) {
-                                        eprintln!("Failed to delete directory: {:?}", e);
+                                if this.server_url.is_some() {
+                                    if let Err(e) = delete_file_or_dir(&p_delete, true, &this.server_url) {
+                                        eprintln!("Failed to delete path: {:?}", e);
                                     }
                                 } else {
-                                    if let Err(e) = std::fs::remove_file(&p_delete) {
-                                        eprintln!("Failed to delete file: {:?}", e);
+                                    if p_delete.is_dir() {
+                                        if let Err(e) = std::fs::remove_dir_all(&p_delete) {
+                                            eprintln!("Failed to delete directory: {:?}", e);
+                                        }
+                                    } else {
+                                        if let Err(e) = std::fs::remove_file(&p_delete) {
+                                            eprintln!("Failed to delete file: {:?}", e);
+                                        }
                                     }
                                 }
                                 this.refresh_git_diff(tab_id, cx);
@@ -3329,6 +3531,37 @@ fn dashboard_sidebar(view: &DashboardView, cx: &mut Context<DashboardView>) -> A
                 None
             };
 
+            let is_remote = view.is_dashboard_remote(dashboard);
+            let remote_badge = if view.server_url.is_some() {
+                if is_remote {
+                    Some(
+                        div()
+                            .text_size(px(9.))
+                            .font_normal()
+                            .text_color(rgb(0x57c994))
+                            .bg(theme.muted)
+                            .px_1()
+                            .rounded_xs()
+                            .ml_2()
+                            .child("Remote")
+                    )
+                } else {
+                    Some(
+                        div()
+                            .text_size(px(9.))
+                            .font_normal()
+                            .text_color(theme.muted_foreground)
+                            .bg(theme.muted)
+                            .px_1()
+                            .rounded_xs()
+                            .ml_2()
+                            .child("Local")
+                    )
+                }
+            } else {
+                None
+            };
+
             let row = div()
                 .id(ElementId::Integer(1_000_000 + dashboard.id as u64))
                 .w_full()
@@ -3373,6 +3606,7 @@ fn dashboard_sidebar(view: &DashboardView, cx: &mut Context<DashboardView>) -> A
                                         .font_semibold()
                                         .child(dashboard.title.clone())
                                 )
+                                .children(remote_badge)
                                 .children(badge)
                                 .children(spinner)
                                 .children(done_badge),
@@ -3417,7 +3651,7 @@ fn dashboard_sidebar(view: &DashboardView, cx: &mut Context<DashboardView>) -> A
             let mut matched_clients: Vec<(&String, &std::sync::Arc<crate::lsp::LspClient>)> = view.lsp_clients
                 .iter()
                 .filter(|((workspace_root, _), _)| {
-                    paths_match(workspace_root, &dashboard.current_dir)
+                    paths_match(workspace_root, &dashboard.current_dir, &dashboard.server_url)
                 })
                 .map(|((_, name), client)| (name, client))
                 .collect();
@@ -3540,16 +3774,42 @@ fn dashboard_sidebar(view: &DashboardView, cx: &mut Context<DashboardView>) -> A
                     }),
                 ))
                 .child(div().w(px(6.)))
-                .child(action_icon_button(
-                    ElementId::Integer(900_001),
-                    IconName::Plus,
-                    false,
-                    settings,
-                    theme,
-                    cx.listener(move |this, _: &ClickEvent, window, cx| {
-                        this.add_dashboard(window, cx);
-                    }),
-                )),
+                .children(if view.server_url.is_some() {
+                    vec![
+                        sidebar_text_button(
+                            ElementId::Integer(900_011),
+                            "+ Local",
+                            false,
+                            theme,
+                            cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                this.add_local_dashboard(window, cx);
+                            }),
+                        ).into_any_element(),
+                        div().w(px(4.)).into_any_element(),
+                        sidebar_text_button(
+                            ElementId::Integer(900_012),
+                            "+ Remote",
+                            false,
+                            theme,
+                            cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                this.add_remote_dashboard(window, cx);
+                            }),
+                        ).into_any_element(),
+                    ]
+                } else {
+                    vec![
+                        action_icon_button(
+                            ElementId::Integer(900_001),
+                            IconName::Plus,
+                            false,
+                            settings,
+                            theme,
+                            cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                this.add_dashboard(window, cx);
+                            }),
+                        ).into_any_element()
+                    ]
+                }),
         )
         .children(dashboard_rows)
         .child(div().h(px(6.)))
@@ -4660,8 +4920,9 @@ fn build_tree(
     expanded_paths: &std::collections::HashSet<PathBuf>,
     nodes: &mut Vec<ExplorerNode>,
     edit_state: Option<&ExplorerEditState>,
+    server_url: &Option<String>,
 ) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    let Ok(entries) = read_directory(dir, server_url) else {
         return;
     };
 
@@ -4669,21 +4930,19 @@ fn build_tree(
     let mut file_entries = Vec::new();
 
     for entry in entries {
-        if let Ok(entry) = entry {
-            let path = entry.path();
-            let name = entry.file_name().to_string_lossy().into_owned();
+        let path = entry.path;
+        let name = entry.name;
 
-            // Skip common ignored files/directories to match VS Code and keep it fast
-            if name == ".git" || name == ".DS_Store" || name == "node_modules" || name == "target" {
-                continue;
-            }
+        // Skip common ignored files/directories to match VS Code and keep it fast
+        if name == ".git" || name == ".DS_Store" || name == "node_modules" || name == "target" {
+            continue;
+        }
 
-            let is_dir = path.is_dir();
-            if is_dir {
-                dir_entries.push((path, name));
-            } else {
-                file_entries.push((path, name));
-            }
+        let is_dir = entry.is_dir;
+        if is_dir {
+            dir_entries.push((path, name));
+        } else {
+            file_entries.push((path, name));
         }
     }
 
@@ -4734,7 +4993,7 @@ fn build_tree(
         });
 
         if is_expanded {
-            build_tree(&path, depth + 1, expanded_paths, nodes, edit_state);
+            build_tree(&path, depth + 1, expanded_paths, nodes, edit_state, server_url);
         }
     }
 
@@ -4783,18 +5042,18 @@ fn detect_language(path: &std::path::Path) -> &'static str {
     }
 }
 
-fn has_extension(dir: &Path, ext: &str) -> bool {
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some(ext) {
+fn has_extension(dir: &Path, ext: &str, server_url: &Option<String>) -> bool {
+    if let Ok(entries) = read_directory(dir, server_url) {
+        for entry in entries {
+            let path = entry.path;
+            if !entry.is_dir && path.extension().and_then(|e| e.to_str()) == Some(ext) {
                 return true;
             }
-            if path.is_dir() {
-                if let Ok(sub_entries) = std::fs::read_dir(path) {
-                    for sub_entry in sub_entries.flatten() {
-                        let sub_path = sub_entry.path();
-                        if sub_path.is_file() && sub_path.extension().and_then(|e| e.to_str()) == Some(ext) {
+            if entry.is_dir {
+                if let Ok(sub_entries) = read_directory(&path, server_url) {
+                    for sub_entry in sub_entries {
+                        let sub_path = sub_entry.path;
+                        if !sub_entry.is_dir && sub_path.extension().and_then(|e| e.to_str()) == Some(ext) {
                             return true;
                         }
                     }
@@ -4805,12 +5064,12 @@ fn has_extension(dir: &Path, ext: &str) -> bool {
     false
 }
 
-fn paths_match(p1: &Path, p2: &Path) -> bool {
+fn paths_match(p1: &Path, p2: &Path, server_url: &Option<String>) -> bool {
     if p1 == p2 || p1.starts_with(p2) || p2.starts_with(p1) {
         return true;
     }
-    let c1 = std::fs::canonicalize(p1).unwrap_or_else(|_| p1.to_path_buf());
-    let c2 = std::fs::canonicalize(p2).unwrap_or_else(|_| p2.to_path_buf());
+    let c1 = canonicalize_path(p1, server_url);
+    let c2 = canonicalize_path(p2, server_url);
     c1 == c2 || c1.starts_with(&c2) || c2.starts_with(&c1)
 }
 
@@ -4861,6 +5120,7 @@ fn render_explorer(
     dashboards: &HashMap<usize, DashboardState>,
     editors: &HashMap<usize, Entity<InputState>>,
     original_contents: &HashMap<usize, String>,
+    server_url: &Option<String>,
     _window: &mut Window,
     cx: &mut Context<DashboardView>,
 ) -> AnyElement {
@@ -4882,7 +5142,7 @@ fn render_explorer(
     let tab_edit = explorer_edit.filter(|e| e.tab_id == tab_id);
 
     let mut nodes = Vec::new();
-    build_tree(&root_path, 0, tab_expanded, &mut nodes, tab_edit);
+    build_tree(&root_path, 0, tab_expanded, &mut nodes, tab_edit, server_url);
 
     let items: Vec<AnyElement> = nodes
         .into_iter()
@@ -5201,6 +5461,7 @@ fn render_panel_content(
     terminal_settings: &TerminalSettings,
     layout_settings: &LayoutSettings,
     explorer_edit: Option<&ExplorerEditState>,
+    server_url: &Option<String>,
     window: &mut Window,
     cx: &mut Context<DashboardView>,
 ) -> AnyElement {
@@ -5226,6 +5487,7 @@ fn render_panel_content(
                 dashboards,
                 editors,
                 original_contents,
+                server_url,
                 window,
                 cx,
             )
@@ -5375,6 +5637,7 @@ fn render_panel_content(
                 lsp_loading,
                 lsp_servers,
                 layout_settings,
+                server_url,
                 window,
                 cx,
             )
@@ -5391,6 +5654,7 @@ fn render_diagnostics_panel(
     lsp_loading: &HashMap<PathBuf, bool>,
     lsp_servers: &HashMap<String, Vec<String>>,
     _layout_settings: &LayoutSettings,
+    server_url: &Option<String>,
     _window: &mut Window,
     cx: &mut Context<DashboardView>,
 ) -> AnyElement {
@@ -5399,22 +5663,27 @@ fn render_diagnostics_panel(
 
     // Detect relevant languages for this workspace
     let mut relevant_langs = std::collections::HashSet::new();
-    if dashboard_cwd.join("Cargo.toml").exists() || has_extension(&dashboard_cwd, "rs") {
+    let entries = read_directory(&dashboard_cwd, &server_url).unwrap_or_default();
+    let has_file = |name: &str| -> bool {
+        entries.iter().any(|e| !e.is_dir && e.name == name)
+    };
+
+    if has_file("Cargo.toml") || has_extension(&dashboard_cwd, "rs", &server_url) {
         relevant_langs.insert("rust".to_string());
     }
-    if dashboard_cwd.join("package.json").exists() || dashboard_cwd.join("tsconfig.json").exists() || has_extension(&dashboard_cwd, "ts") || has_extension(&dashboard_cwd, "js") {
+    if has_file("package.json") || has_file("tsconfig.json") || has_extension(&dashboard_cwd, "ts", &server_url) || has_extension(&dashboard_cwd, "js", &server_url) {
         relevant_langs.insert("typescript".to_string());
         relevant_langs.insert("javascript".to_string());
         relevant_langs.insert("tailwind".to_string());
     }
-    if dashboard_cwd.join("requirements.txt").exists() || dashboard_cwd.join("pyproject.toml").exists() || has_extension(&dashboard_cwd, "py") {
+    if has_file("requirements.txt") || has_file("pyproject.toml") || has_extension(&dashboard_cwd, "py", &server_url) {
         relevant_langs.insert("python".to_string());
     }
-    if has_extension(&dashboard_cwd, "html") {
+    if has_extension(&dashboard_cwd, "html", &server_url) {
         relevant_langs.insert("html".to_string());
         relevant_langs.insert("tailwind".to_string());
     }
-    if has_extension(&dashboard_cwd, "css") {
+    if has_extension(&dashboard_cwd, "css", &server_url) {
         relevant_langs.insert("css".to_string());
         relevant_langs.insert("tailwind".to_string());
     }
@@ -5427,8 +5696,8 @@ fn render_diagnostics_panel(
         if path.starts_with(&dashboard_cwd) {
             true
         } else {
-            let c_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-            let c_cwd = std::fs::canonicalize(&dashboard_cwd).unwrap_or_else(|_| dashboard_cwd.to_path_buf());
+            let c_path = canonicalize_path(path, &server_url);
+            let c_cwd = canonicalize_path(&dashboard_cwd, &server_url);
             c_path.starts_with(&c_cwd)
         }
     });
@@ -5436,7 +5705,7 @@ fn render_diagnostics_panel(
     let mut matched_clients: Vec<(&String, &std::sync::Arc<crate::lsp::LspClient>)> = lsp_clients
         .iter()
         .filter(|((workspace_root, _), _)| {
-            paths_match(workspace_root, &dashboard_cwd)
+            paths_match(workspace_root, &dashboard_cwd, &server_url)
         })
         .map(|((_, name), client)| (name, client))
         .collect();
@@ -5616,8 +5885,8 @@ fn render_diagnostics_panel(
         let belongs_to_dashboard = if path.starts_with(&dashboard_cwd) {
             true
         } else {
-            let c_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-            let c_cwd = std::fs::canonicalize(&dashboard_cwd).unwrap_or_else(|_| dashboard_cwd.to_path_buf());
+            let c_path = canonicalize_path(path, &server_url);
+            let c_cwd = canonicalize_path(&dashboard_cwd, &server_url);
             c_path.starts_with(&c_cwd)
         };
         if !belongs_to_dashboard {
