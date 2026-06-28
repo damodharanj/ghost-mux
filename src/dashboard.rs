@@ -211,6 +211,11 @@ pub struct TabMenuState {
     pub position: gpui::Point<gpui::Pixels>,
 }
 
+pub struct RemoteUrlModal {
+    pub input_state: Entity<InputState>,
+    pub window_handle: AnyWindowHandle,
+}
+
 #[allow(dead_code)]
 #[derive(Clone)]
 pub struct ExplorerDragItem {
@@ -287,6 +292,7 @@ pub struct DashboardView {
     pub tab_scroll_handles: std::cell::RefCell<HashMap<usize, gpui::ScrollHandle>>,
     pub next_id: usize,
     pub modal_editor: Option<ModalEditorState>,
+    pub remote_url_modal: Option<RemoteUrlModal>,
     pub editor_panels: std::collections::HashSet<usize>,
     pub open_menu: Option<TabMenuState>,
     pub panel_focus_handles: HashMap<usize, FocusHandle>,
@@ -362,6 +368,7 @@ impl DashboardView {
             tab_scroll_handles: std::cell::RefCell::new(HashMap::new()),
             next_id: 0,
             modal_editor: None,
+            remote_url_modal: None,
             editor_panels: std::collections::HashSet::new(),
             panel_focus_handles: HashMap::new(),
             open_menu: None,
@@ -409,7 +416,7 @@ impl DashboardView {
 
         if !restored {
             let is_local = view.server_url.is_none();
-            let first_dashboard = view.create_dashboard_with_mode("Dashboard 1".to_string(), is_local, window, cx);
+            let first_dashboard = view.create_dashboard_with_mode("Dashboard 1".to_string(), is_local, None, window, cx);
             view.active_dashboard_id = first_dashboard;
         }
 
@@ -642,6 +649,7 @@ impl DashboardView {
         &mut self,
         title: String,
         is_local: bool,
+        custom_server_url: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> usize {
@@ -676,7 +684,7 @@ impl DashboardView {
         let server_url = if is_local {
             None
         } else {
-            self.server_url.clone()
+            custom_server_url.or_else(|| self.server_url.clone())
         };
 
         self.dashboards.insert(
@@ -704,7 +712,7 @@ impl DashboardView {
 
     pub fn add_local_dashboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let title = format!("Local Dashboard {}", self.dashboard_order.len() + 1);
-        let new_id = self.create_dashboard_with_mode(title, true, window, cx);
+        let new_id = self.create_dashboard_with_mode(title, true, None, window, cx);
         self.active_dashboard_id = new_id;
         self.ensure_dashboard_lsps(new_id, window, cx);
         self.persist(cx);
@@ -712,14 +720,63 @@ impl DashboardView {
     }
 
     pub fn add_remote_dashboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_remote_url_modal(window, cx);
+    }
+
+    pub fn show_remote_url_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let default_url = self.settings.server_url.clone()
+            .unwrap_or_else(|| "http://127.0.0.1:3030".to_string());
+        let window_handle = window.window_handle();
+        
+        let input_state = cx.new(|cx| {
+            let mut e = InputState::new(window, cx).multi_line(false);
+            e.set_value(default_url, window, cx);
+            e.focus(window, cx);
+            let len = e.value().len();
+            e.select_text_range(0..len, cx);
+            e
+        });
+
+        cx.subscribe(&input_state, move |this, _input, event, cx| {
+            match event {
+                gpui_component::input::InputEvent::PressEnter { .. } => {
+                    this.confirm_remote_url_modal(cx);
+                }
+                _ => {}
+            }
+        }).detach();
+
+        self.remote_url_modal = Some(RemoteUrlModal { input_state, window_handle });
+        cx.notify();
+    }
+
+    pub fn confirm_remote_url_modal(&mut self, cx: &mut Context<Self>) {
+        if let Some(modal) = self.remote_url_modal.take() {
+            let url = modal.input_state.read(cx).value().to_string().trim().to_string();
+            let window_handle = modal.window_handle;
+            if !url.is_empty() {
+                let entity = cx.weak_entity();
+                let _ = cx.update_window(window_handle, move |_, window, cx| {
+                    let _ = entity.update(cx, |this, cx| {
+                        this.add_remote_dashboard_with_url(url, window, cx);
+                    });
+                });
+            } else {
+                cx.notify();
+            }
+        }
+    }
+
+    pub fn add_remote_dashboard_with_url(&mut self, url: String, window: &mut Window, cx: &mut Context<Self>) {
         let title = format!("Remote Dashboard {}", self.dashboard_order.len() + 1);
-        let new_id = self.create_dashboard_with_mode(title, false, window, cx);
+        let new_id = self.create_dashboard_with_mode(title, false, Some(url), window, cx);
         self.active_dashboard_id = new_id;
         self.ensure_dashboard_lsps(new_id, window, cx);
         self.persist(cx);
         cx.notify();
     }
 
+    #[allow(dead_code)]
     pub fn add_dashboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let is_local = self.server_url.is_none();
         if is_local {
@@ -3068,6 +3125,10 @@ impl Render for DashboardView {
             root = root.child(render_modal_editor(&modal.path, &modal.editor, modal.is_diff, self, cx));
         }
 
+        if let Some(ref modal) = self.remote_url_modal {
+            root = root.child(render_remote_url_modal(modal, self, cx));
+        }
+
         if let Some(ref menu) = self.explorer_context_menu {
             let theme = cx.theme();
             let position = menu.position;
@@ -3394,6 +3455,189 @@ impl Render for DashboardView {
 
         root.into_any()
     }
+}
+
+fn render_remote_url_modal(
+    modal: &RemoteUrlModal,
+    _view: &DashboardView,
+    cx: &mut Context<DashboardView>,
+) -> AnyElement {
+    let theme = cx.theme();
+
+    // Dark transparent backdrop
+    div()
+        .id(ElementId::Integer(999_400))
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .bg(gpui::rgba(0x00000077))
+        .flex()
+        .items_center()
+        .justify_center()
+        .p_12()
+        .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+            this.remote_url_modal = None;
+            cx.notify();
+        }))
+        .on_scroll_wheel(|_, _, cx| {
+            cx.stop_propagation();
+        })
+        .child(
+            // Modal container
+            div()
+                .id(ElementId::Integer(999_410))
+                .w(px(400.))
+                .flex()
+                .flex_col()
+                .rounded(theme.radius)
+                .bg(theme.background)
+                .border_1()
+                .border_color(theme.border)
+                .shadow_lg()
+                .on_click(|_, _, cx| {
+                    cx.stop_propagation();
+                })
+                .on_mouse_down(MouseButton::Left, {
+                    let input_state = modal.input_state.clone();
+                    move |_, window, cx| {
+                        cx.stop_propagation();
+                        input_state.update(cx, |e, cx| {
+                            e.focus(window, cx);
+                        });
+                    }
+                })
+                .on_action(cx.listener(|this, _: &gpui_component::input::Escape, _window, cx| {
+                    this.remote_url_modal = None;
+                    cx.notify();
+                }))
+                .child(
+                    // Modal Header
+                    div()
+                        .h(px(32.))
+                        .px_4()
+                        .bg(theme.secondary)
+                        .border_b_1()
+                        .border_color(theme.border)
+                        .rounded_t(theme.radius)
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(
+                                    Icon::new(IconName::Ghost)
+                                        .size_3p5()
+                                        .text_color(theme.accent)
+                                )
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .font_bold()
+                                        .text_color(theme.foreground)
+                                        .child("New Remote Dashboard")
+                                )
+                        )
+                )
+                .child(
+                    // Modal Body
+                    div()
+                        .p_4()
+                        .flex()
+                        .flex_col()
+                        .gap_3()
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_semibold()
+                                .text_color(theme.muted_foreground)
+                                .child("Server URL")
+                        )
+                        .child(
+                            div()
+                                .w_full()
+                                .h(px(26.))
+                                .border_1()
+                                .border_color(theme.border)
+                                .rounded(theme.radius)
+                                .bg(theme.secondary)
+                                .px_2()
+                                .flex()
+                                .items_center()
+                                .child(
+                                    Input::new(&modal.input_state)
+                                        .h_full()
+                                        .font_family(theme.mono_font_family.clone())
+                                        .text_size(theme.mono_font_size)
+                                        .font_normal()
+                                )
+                        )
+                        .child(
+                            div()
+                                .text_size(px(10.))
+                                .text_color(theme.muted_foreground)
+                                .child("Enter the remote server URL for this dashboard.")
+                        )
+                )
+                .child(
+                    // Modal Footer
+                    div()
+                        .px_4()
+                        .pb_4()
+                        .flex()
+                        .justify_end()
+                        .gap_2()
+                        .child(
+                            // Cancel
+                            div()
+                                .id(ElementId::Integer(999_420))
+                                .h(px(24.))
+                                .px_3()
+                                .rounded(theme.radius)
+                                .border_1()
+                                .border_color(theme.border)
+                                .bg(theme.background)
+                                .text_color(theme.muted_foreground)
+                                .text_xs()
+                                .font_semibold()
+                                .cursor_pointer()
+                                .hover(|s| s.bg(theme.muted).text_color(theme.foreground))
+                                .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+                                    this.remote_url_modal = None;
+                                    cx.notify();
+                                }))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child("Cancel")
+                        )
+                        .child(
+                            // Connect
+                            div()
+                                .id(ElementId::Integer(999_430))
+                                .h(px(24.))
+                                .px_3()
+                                .rounded(theme.radius)
+                                .bg(theme.accent)
+                                .text_color(theme.foreground)
+                                .text_xs()
+                                .font_semibold()
+                                .cursor_pointer()
+                                .hover(|s| s.bg(theme.accent).text_color(theme.foreground))
+                                .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+                                    this.confirm_remote_url_modal(cx);
+                                }))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child("Connect")
+                        )
+                )
+        )
+        .into_any_element()
 }
 
 fn dashboard_sidebar(view: &DashboardView, cx: &mut Context<DashboardView>) -> AnyElement {
@@ -3774,42 +4018,27 @@ fn dashboard_sidebar(view: &DashboardView, cx: &mut Context<DashboardView>) -> A
                     }),
                 ))
                 .child(div().w(px(6.)))
-                .children(if view.server_url.is_some() {
-                    vec![
-                        sidebar_text_button(
-                            ElementId::Integer(900_011),
-                            "+ Local",
-                            false,
-                            theme,
-                            cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                this.add_local_dashboard(window, cx);
-                            }),
-                        ).into_any_element(),
-                        div().w(px(4.)).into_any_element(),
-                        sidebar_text_button(
-                            ElementId::Integer(900_012),
-                            "+ Remote",
-                            false,
-                            theme,
-                            cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                this.add_remote_dashboard(window, cx);
-                            }),
-                        ).into_any_element(),
-                    ]
-                } else {
-                    vec![
-                        action_icon_button(
-                            ElementId::Integer(900_001),
-                            IconName::Plus,
-                            false,
-                            settings,
-                            theme,
-                            cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                this.add_dashboard(window, cx);
-                            }),
-                        ).into_any_element()
-                    ]
-                }),
+                .children(vec![
+                    sidebar_text_button(
+                        ElementId::Integer(900_011),
+                        "+ Local",
+                        false,
+                        theme,
+                        cx.listener(move |this, _: &ClickEvent, window, cx| {
+                            this.add_local_dashboard(window, cx);
+                        }),
+                    ).into_any_element(),
+                    div().w(px(4.)).into_any_element(),
+                    sidebar_text_button(
+                        ElementId::Integer(900_012),
+                        "+ Remote",
+                        false,
+                        theme,
+                        cx.listener(move |this, _: &ClickEvent, window, cx| {
+                            this.add_remote_dashboard(window, cx);
+                        }),
+                    ).into_any_element(),
+                ]),
         )
         .children(dashboard_rows)
         .child(div().h(px(6.)))
