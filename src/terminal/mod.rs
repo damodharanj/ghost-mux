@@ -75,6 +75,7 @@ pub struct TerminalModel {
 struct TerminalUpdate {
     output: Vec<u8>,
     running_agent: Option<String>,
+    last_event: Option<String>,
 }
 
 impl TerminalModel {
@@ -187,6 +188,8 @@ impl TerminalModel {
                     Some(ref id) => id.clone(),
                     None => return,
                 };
+                let mut last_seen_agent = None;
+                let mut last_seen_event = None;
                 loop {
                     std::thread::sleep(std::time::Duration::from_millis(30));
                     let params = serde_json::json!({ "pty_id": id_str });
@@ -199,11 +202,19 @@ impl TerminalModel {
                             let running_agent = res.get("running_agent")
                                 .and_then(|a| a.as_str())
                                 .map(|s| s.to_string());
+                            let last_event = res.get("last_event")
+                                .and_then(|e| e.as_str())
+                                .map(|s| s.to_string());
                             
-                            if !output_bytes.is_empty() || running_agent.is_some() {
+                            let agent_changed = running_agent != last_seen_agent;
+                            let event_changed = last_event != last_seen_event;
+                            if !output_bytes.is_empty() || agent_changed || event_changed {
+                                last_seen_agent = running_agent.clone();
+                                last_seen_event = last_event.clone();
                                 let _ = tx.send(TerminalUpdate {
                                     output: output_bytes,
                                     running_agent,
+                                    last_event,
                                 });
                             }
                         }
@@ -225,6 +236,7 @@ impl TerminalModel {
                             let _ = tx.send(TerminalUpdate {
                                 output: buf[..n].to_vec(),
                                 running_agent: None,
+                                last_event: None,
                             });
                         }
                     }
@@ -239,10 +251,12 @@ impl TerminalModel {
                 .await;
             let mut buf: Vec<u8> = Vec::new();
             let mut latest_agent = None;
+            let mut latest_event = None;
             let mut has_agent_update = false;
             while let Ok(update) = rx.try_recv() {
                 buf.extend_from_slice(&update.output);
                 latest_agent = update.running_agent;
+                latest_event = update.last_event;
                 has_agent_update = true;
             }
             if !buf.is_empty() || has_agent_update {
@@ -252,7 +266,7 @@ impl TerminalModel {
                             let is_at_bottom = if let Ok(sb) = model.terminal.scrollbar() {
                                 sb.offset + sb.len >= sb.total
                             } else {
-                                true
+                                  true
                             };
                             model.terminal.vt_write(&buf);
                             if is_at_bottom {
@@ -264,6 +278,32 @@ impl TerminalModel {
                         }
                         if has_agent_update && model.server_url.is_some() {
                             model.running_agent = latest_agent;
+                            if model.running_agent.is_none() {
+                                model.process_ongoing = false;
+                                model.job_done = true;
+                                model.needs_attention = false;
+                            }
+                            if let Some(ref ev) = latest_event {
+                                match ev.as_str() {
+                                    "Start" => {
+                                        model.process_ongoing = true;
+                                        model.needs_attention = false;
+                                        model.job_done = false;
+                                    }
+                                    "Stop" => {
+                                        model.process_ongoing = false;
+                                        model.job_done = true;
+                                        model.needs_attention = false;
+                                        model.running_agent = None;
+                                    }
+                                    "PermissionRequest" => {
+                                        model.process_ongoing = true;
+                                        model.needs_attention = true;
+                                        model.job_done = false;
+                                    }
+                                    _ => {}
+                                }
+                            }
                         }
                         cx.notify();
                     })

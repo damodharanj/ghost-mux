@@ -2,6 +2,7 @@
 name = "ghost-mux"
 version = "0.1.0"
 edition = "2021"
+default-run = "ghost-mux"
 
 description = "A GPUI desktop app with resizable panel layout"
 

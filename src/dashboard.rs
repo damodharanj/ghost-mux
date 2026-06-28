@@ -451,12 +451,25 @@ impl DashboardView {
             }
         }
         if let Some(path) = path_fallback {
-            return self.resolve_path_server_url(path);
+            if let Some(url) = self.resolve_path_server_url(path) {
+                return Some(url);
+            }
+        }
+        // Fallback to active dashboard if we still don't know
+        if let Some(dashboard) = self.dashboards.get(&self.active_dashboard_id) {
+            return dashboard.server_url.clone();
         }
         None
     }
 
     pub fn resolve_path_server_url(&self, path: &Path) -> Option<String> {
+        for dashboard in self.dashboards.values() {
+            if let Some(ref url) = dashboard.server_url {
+                if path.starts_with(&dashboard.current_dir) {
+                    return Some(url.clone());
+                }
+            }
+        }
         if let (Some(ref url), Some(ref root)) = (&self.server_url, &self.remote_workspace_root) {
             if path.starts_with(root) {
                 return Some(url.clone());
@@ -570,6 +583,43 @@ impl DashboardView {
                 std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
             });
 
+            // Load saved split-size ratios so the first render can pre-seed
+            // ResizableState via new_with_ratios.
+            for (split_id, ratios) in ser_dashboard.split_size_ratios {
+                self.pending_split_ratios.insert(split_id, ratios);
+            }
+
+            let is_local = ser_dashboard.is_local.unwrap_or(false);
+            let server_url = if is_local {
+                None
+            } else {
+                ser_dashboard.server_url.clone().or_else(|| {
+                    if let (Some(ref url), Some(ref root)) = (&self.server_url, &self.remote_workspace_root) {
+                        if current_dir.starts_with(root) {
+                            Some(url.clone())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                })
+            };
+
+            // Pre-insert skeleton state so that get_tab_server_url can resolve this dashboard
+            self.dashboards.insert(
+                ser_dashboard.id,
+                DashboardState {
+                    id: ser_dashboard.id,
+                    title: ser_dashboard.title.clone(),
+                    layout: layout.clone(),
+                    panel_tabs: HashMap::new(),
+                    current_dir: current_dir.clone(),
+                    server_url: server_url.clone(),
+                    is_local,
+                },
+            );
+
             let mut panel_tabs: HashMap<usize, PanelTabs> = HashMap::new();
             for entry in ser_dashboard.panels {
                 let tabs: Vec<PanelTab> = entry
@@ -600,41 +650,9 @@ impl DashboardView {
                 );
             }
 
-            // Load saved split-size ratios so the first render can pre-seed
-            // ResizableState via new_with_ratios.
-            for (split_id, ratios) in ser_dashboard.split_size_ratios {
-                self.pending_split_ratios.insert(split_id, ratios);
+            if let Some(d) = self.dashboards.get_mut(&ser_dashboard.id) {
+                d.panel_tabs = panel_tabs;
             }
-
-            let is_local = ser_dashboard.is_local.unwrap_or(false);
-            let server_url = if is_local {
-                None
-            } else {
-                ser_dashboard.server_url.clone().or_else(|| {
-                    if let (Some(ref url), Some(ref root)) = (&self.server_url, &self.remote_workspace_root) {
-                        if current_dir.starts_with(root) {
-                            Some(url.clone())
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                })
-            };
-
-            self.dashboards.insert(
-                ser_dashboard.id,
-                DashboardState {
-                    id: ser_dashboard.id,
-                    title: ser_dashboard.title,
-                    layout,
-                    panel_tabs,
-                    current_dir,
-                    server_url,
-                    is_local,
-                },
-            );
         }
 
         // Validate active_dashboard_id in case the state file is stale.
@@ -740,7 +758,7 @@ impl DashboardView {
         cx.subscribe(&input_state, move |this, _input, event, cx| {
             match event {
                 gpui_component::input::InputEvent::PressEnter { .. } => {
-                    this.confirm_remote_url_modal(cx);
+                    this.confirm_remote_url_modal(None, cx);
                 }
                 _ => {}
             }
@@ -750,17 +768,25 @@ impl DashboardView {
         cx.notify();
     }
 
-    pub fn confirm_remote_url_modal(&mut self, cx: &mut Context<Self>) {
+    pub fn confirm_remote_url_modal(&mut self, window: Option<&mut Window>, cx: &mut Context<Self>) {
         if let Some(modal) = self.remote_url_modal.take() {
             let url = modal.input_state.read(cx).value().to_string().trim().to_string();
             let window_handle = modal.window_handle;
             if !url.is_empty() {
-                let entity = cx.weak_entity();
-                let _ = cx.update_window(window_handle, move |_, window, cx| {
-                    let _ = entity.update(cx, |this, cx| {
-                        this.add_remote_dashboard_with_url(url, window, cx);
-                    });
-                });
+                if let Some(win) = window {
+                    self.add_remote_dashboard_with_url(url, win, cx);
+                } else {
+                    let entity = cx.weak_entity();
+                    cx.spawn(async move |_, cx| {
+                        let _ = cx.update(|cx| {
+                            let _ = cx.update_window(window_handle, |_, window, cx| {
+                                let _ = entity.update(cx, |this, cx| {
+                                    this.add_remote_dashboard_with_url(url, window, cx);
+                                });
+                            });
+                        });
+                    }).detach();
+                }
             } else {
                 cx.notify();
             }
@@ -3627,8 +3653,8 @@ fn render_remote_url_modal(
                                 .font_semibold()
                                 .cursor_pointer()
                                 .hover(|s| s.bg(theme.accent).text_color(theme.foreground))
-                                .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
-                                    this.confirm_remote_url_modal(cx);
+                                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                    this.confirm_remote_url_modal(Some(window), cx);
                                 }))
                                 .flex()
                                 .items_center()

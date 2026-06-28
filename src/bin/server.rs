@@ -351,6 +351,14 @@ impl ServerState {
                 cmd.env("GHOST_MUX_TERMINAL_ID", &id);
                 cmd.env("SUPERSET_HOST_AGENT_HOOK_URL", &format!("http://127.0.0.1:{}/hook/{}", self.port, id));
                 cmd.env("SUPERSET_TERMINAL_ID", &id);
+                cmd.env("SUPERSET_WORKSPACE_ID", "1");
+                cmd.env("SUPERSET_TAB_ID", &id);
+                cmd.env("SUPERSET_PANE_ID", &id);
+                if let Ok(home) = std::env::var("HOME") {
+                    cmd.env("SUPERSET_HOME_DIR", &format!("{}/.ghost-mux", home));
+                } else if let Ok(home) = std::env::var("USERPROFILE") {
+                    cmd.env("SUPERSET_HOME_DIR", &format!("{}/.ghost-mux", home));
+                }
 
                 let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
                 drop(pair.slave);
