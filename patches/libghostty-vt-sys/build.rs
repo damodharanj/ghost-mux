@@ -118,7 +118,7 @@ fn main() {
         println!("cargo:rustc-link-lib=framework=CoreFoundation");
         println!("cargo:rustc-link-lib=c++");
     } else if target.contains("linux") {
-        println!("cargo:rustc-link-lib=c++");
+        println!("cargo:rustc-link-lib=stdc++");
     }
     println!("cargo:include={}", include_dir.display());
 }

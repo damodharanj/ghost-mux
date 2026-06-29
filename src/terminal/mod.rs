@@ -70,6 +70,7 @@ pub struct TerminalModel {
     pub running_agent: Option<String>,
     pub server_url: Option<String>,
     pub pty_id: Option<String>,
+    pub scroll_accumulator: f32,
 }
 
 struct TerminalUpdate {
@@ -357,6 +358,7 @@ impl TerminalModel {
             running_agent: None,
             server_url,
             pty_id,
+            scroll_accumulator: 0.0,
         }
     }
 

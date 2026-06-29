@@ -7022,13 +7022,15 @@ fn render_terminal(
                 ScrollDelta::Lines(p) => p.y,
                 ScrollDelta::Pixels(p) => p.y.as_f32() / term_line_height,
             };
-            let delta = -(lines.round() as isize);
-            if delta != 0 {
-                term_entity_scroll.update(cx, |m, inner_cx| {
+            term_entity_scroll.update(cx, |m, inner_cx| {
+                m.scroll_accumulator += -lines;
+                let delta = m.scroll_accumulator.trunc() as isize;
+                if delta != 0 {
+                    m.scroll_accumulator -= delta as f32;
                     m.scroll_by_lines(delta);
                     inner_cx.notify();
-                });
-            }
+                }
+            });
         })
         .on_key_down(move |event, _window, cx| {
             let ks = event.keystroke.clone();
