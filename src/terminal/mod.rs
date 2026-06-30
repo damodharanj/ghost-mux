@@ -614,10 +614,33 @@ impl TerminalModel {
     /// Scroll the terminal viewport by `lines` lines.
     /// Negative scrolls up (toward history), positive scrolls down (toward bottom).
     pub fn scroll_by_lines(&mut self, lines: isize) {
-        if lines != 0 {
+        if lines == 0 {
+            return;
+        }
+
+        let is_alternate = self.terminal.active_screen().map_or(false, |screen| {
+            screen == libghostty_vt::ffi::GhosttyTerminalScreen_GHOSTTY_TERMINAL_SCREEN_ALTERNATE
+        });
+
+        if is_alternate {
+            let key = if lines < 0 { "up" } else { "down" };
+            let count = lines.abs() as usize;
+            let keystroke = Keystroke {
+                key: key.to_string(),
+                key_char: None,
+                modifiers: Modifiers::default(),
+            };
+            let bytes = self.encode_keystroke(&keystroke);
+            let mut all_bytes = Vec::with_capacity(bytes.len() * count);
+            for _ in 0..count {
+                all_bytes.extend_from_slice(&bytes);
+            }
+            self.send_key(&all_bytes);
+        } else {
             let _ = self.terminal.scroll_viewport(ScrollViewport::Delta(lines));
         }
     }
+
 
     pub fn scrollbar_info(&self) -> Option<libghostty_vt::ffi::GhosttyTerminalScrollbar> {
         self.terminal.scrollbar().ok()
