@@ -4,6 +4,8 @@
 
 Ghost-mux is a GPUI-based desktop **dashboard builder**. The app starts with a single full-screen panel. The user can split any panel horizontally or vertically to create arbitrary grid layouts. All splits are resizable via drag handles.
 
+Additionally, a headless server is included that hosts a lightweight, mobile-responsive **Web Dashboard** served at `/`. The web client mirrors the desktop app's layout splitting capabilities and provides file exploration, text editing, terminal sessions, and Git operations over a custom JSON-RPC API.
+
 ## Design Reference
 
 - Theme, colors, and font reference image: [assets/design/reference-theme1.png](file:///Users/saranyadamo/Downloads/ghost-mux/assets/design/reference-theme1.png)
@@ -102,6 +104,7 @@ Dashboard panels can load different components represented by the [PanelContent]
 | [src/browser.rs](file:///Users/saranyadamo/Downloads/ghost-mux/src/browser.rs) | WKWebView wrapper [WebViewHandle](file:///Users/saranyadamo/Downloads/ghost-mux/src/browser.rs#L79) integrating macOS Cocoa webview with GPUI |
 | [src/hook_server.rs](file:///Users/saranyadamo/Downloads/ghost-mux/src/hook_server.rs) | TCP Server ([start_hook_server](file:///Users/saranyadamo/Downloads/ghost-mux/src/hook_server.rs#L13)) for routing agent lifecycle notifications, plus config auto-patches in [setup_agent_hooks](file:///Users/saranyadamo/Downloads/ghost-mux/src/hook_server.rs#L113) |
 | [src/remote_api.rs](file:///Users/saranyadamo/Downloads/ghost-mux/src/remote_api.rs) | Synchronous JSON-RPC API client ([call_remote_api](file:///Users/saranyadamo/Downloads/ghost-mux/src/remote_api.rs#L5)) over HTTP/HTTPS to headless server for remote filesystem mutations |
+| [src/bin/server.rs](file:///Users/saranyadamo/Downloads/ghost-mux/src/bin/server.rs) | Headless Server — processes JSON-RPC requests (such as [pty.list](file:///Users/saranyadamo/Downloads/ghost-mux/src/bin/server.rs#L520)), and serves static files for the Web Dashboard |
 | [src/terminal/mod.rs](file:///Users/saranyadamo/Downloads/ghost-mux/src/terminal/mod.rs) | PTY stream wrapper [TerminalModel](file:///Users/saranyadamo/Downloads/ghost-mux/src/terminal/mod.rs#L39) implementing terminal emulation via `libghostty-vt` bindings |
 | [.github/workflows/build.yml](file:///Users/saranyadamo/Downloads/ghost-mux/.github/workflows/build.yml) | GitHub Actions CI build & release workflow |
 | [Cargo.toml](file:///Users/saranyadamo/Downloads/ghost-mux/Cargo.toml) | Cargo workspace manifest |
@@ -136,6 +139,9 @@ Dashboard panels can load different components represented by the [PanelContent]
 | [tools/windows/dev-run-server.ps1](file:///Users/saranyadamo/Downloads/ghost-mux/tools/windows/dev-run-server.ps1) | PowerShell debug dev server runner on Windows |
 | [tools/windows/dev-run.cmd](file:///Users/saranyadamo/Downloads/ghost-mux/tools/windows/dev-run.cmd) | CMD shim for developer run command |
 | [tools/windows/dev-run-server.cmd](file:///Users/saranyadamo/Downloads/ghost-mux/tools/windows/dev-run-server.cmd) | CMD shim for developer server run command |
+| [web/index.html](file:///Users/saranyadamo/Downloads/ghost-mux/web/index.html) | HTML entrypoint template for the mobile-responsive Web Dashboard |
+| [web/app.js](file:///Users/saranyadamo/Downloads/ghost-mux/web/app.js) | Client-side application script for the Web Dashboard, handling layouts, RPC calls, and responsive state |
+| [web/style.css](file:///Users/saranyadamo/Downloads/ghost-mux/web/style.css) | Custom stylesheets for the Web Dashboard including pane splits, diff highlights, and media queries |
 | [AGENTS.md](file:///Users/saranyadamo/Downloads/ghost-mux/AGENTS.md) | Core repository documentation index (this file) |
 | [.gitignore](file:///Users/saranyadamo/Downloads/ghost-mux/.gitignore) | Git ignore specifications |
 
@@ -184,7 +190,7 @@ The build scripts compile a `--release` binary, collect non-system runtime dylib
 | [tools/windows/build-production.ps1](file:///Users/saranyadamo/Downloads/ghost-mux/tools/windows/build-production.ps1) | Windows PowerShell |
 | [tools/windows/build-production.cmd](file:///Users/saranyadamo/Downloads/ghost-mux/tools/windows/build-production.cmd) | Windows cmd (delegates to ps1) |
 
-macOS: packages the executable, libraries, settings, and icon into `dist/Ghost-mux.app`. If the `codesign` tool is available, it performs ad-hoc code signing on all libraries and binaries (including the overall bundle). On startup, if launched as a bundle (or from `/`), it pivots working directory to `~/Library/Application Support/ghost-mux` where it copies `settings.yaml` and saves layout state.
+macOS: packages the executable, libraries, settings, web client files, and icon into `dist/Ghost-mux.app`. If the `codesign` tool is available, it performs ad-hoc code signing on all libraries and binaries (including the overall bundle). On startup, if launched as a bundle (or from `/`), it pivots working directory to `~/Library/Application Support/ghost-mux` where it copies `settings.yaml` and saves layout state.
 Linux: uses `ldd` + `patchelf` (or `chrpath`, or a `run.sh` wrapper as fallback).  
 Windows: no bundling needed; PE binaries link against system DLLs.
 

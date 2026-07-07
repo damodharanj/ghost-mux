@@ -30,6 +30,9 @@ cp "$PROJECT_ROOT/dist/ghost-mux/settings.yaml" "$RESOURCES_DIR/settings.yaml"
 if [ -d "$PROJECT_ROOT/dist/ghost-mux/assets" ]; then
     cp -R "$PROJECT_ROOT/dist/ghost-mux/assets" "$RESOURCES_DIR/assets"
 fi
+if [ -d "$PROJECT_ROOT/dist/ghost-mux/web" ]; then
+    cp -R "$PROJECT_ROOT/dist/ghost-mux/web" "$RESOURCES_DIR/web"
+fi
 
 # 4. Generate Info.plist
 cat > "$CONTENTS_DIR/Info.plist" <<EOF

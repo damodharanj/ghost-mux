@@ -517,6 +517,19 @@ impl ServerState {
                     Err("PTY session not found".to_string())
                 }
             }
+            "pty.list" => {
+                let ptys = self.ptys.lock().unwrap();
+                let list: Vec<Value> = ptys.iter().map(|(id, pty)| {
+                    serde_json::json!({
+                        "pty_id": id,
+                        "cols": pty.cols,
+                        "rows": pty.rows,
+                        "running_agent": pty.running_agent,
+                        "last_event": pty.last_event
+                    })
+                }).collect();
+                Ok(serde_json::json!({ "sessions": list }))
+            }
 
             // --- Git Methods ---
             "git.status" => {
@@ -747,6 +760,37 @@ fn handle_hook(path: &str, req_body: &str, server_state: &ServerState) -> Result
     }
 }
 
+fn find_web_directory() -> std::path::PathBuf {
+    // 1. Check if "web" directory exists in the current working directory.
+    if Path::new("web").is_dir() {
+        return std::path::PathBuf::from("web");
+    }
+
+    // 2. Check relative to the executable's location.
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            // Next to the executable (e.g. dist/ghost-mux/web)
+            let sibling_web = exe_dir.join("web");
+            if sibling_web.is_dir() {
+                return sibling_web;
+            }
+
+            // Inside macOS App Bundle (e.g. Ghost-mux.app/Contents/MacOS/ghost-mux-server -> Contents/Resources/web)
+            if exe_path.to_string_lossy().contains(".app/Contents/MacOS/") {
+                if let Some(contents_dir) = exe_dir.parent() {
+                    let resources_web = contents_dir.join("Resources/web");
+                    if resources_web.is_dir() {
+                        return resources_web;
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback to "web" in CWD
+    std::path::PathBuf::from("web")
+}
+
 // HTTP Connection handling
 fn handle_connection(mut stream: TcpStream, server_state: Arc<ServerState>) {
     let mut reader = BufReader::new(&mut stream);
@@ -754,6 +798,7 @@ fn handle_connection(mut stream: TcpStream, server_state: Arc<ServerState>) {
     let mut content_length = 0;
     let mut is_post = false;
     let mut is_options = false;
+    let mut is_get = false;
     let mut path = String::new();
 
     loop {
@@ -769,6 +814,11 @@ fn handle_connection(mut stream: TcpStream, server_state: Arc<ServerState>) {
 
         if line.starts_with("POST ") {
             is_post = true;
+            if let Some(p) = line.split_whitespace().nth(1) {
+                path = p.to_string();
+            }
+        } else if line.starts_with("GET ") {
+            is_get = true;
             if let Some(p) = line.split_whitespace().nth(1) {
                 path = p.to_string();
             }
@@ -788,13 +838,54 @@ fn handle_connection(mut stream: TcpStream, server_state: Arc<ServerState>) {
     }
 
     if is_options {
-        let response = "HTTP/1.1 200 OK\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nContent-Length: 0\r\n\r\n";
+        let response = "HTTP/1.1 200 OK\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: POST, GET, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nContent-Length: 0\r\n\r\n";
         let _ = stream.write_all(response.as_bytes());
         return;
     }
 
+    if is_get {
+        let file_path = path.split('?').next().unwrap_or("/");
+        if file_path.contains("..") {
+            send_html_response(stream, 403, "Forbidden", "<h1>403 Forbidden</h1>");
+            return;
+        }
+
+        let web_dir = find_web_directory();
+        let target_file = if file_path == "/" {
+            "index.html"
+        } else {
+            file_path.strip_prefix('/').unwrap_or(file_path)
+        };
+        let full_path = web_dir.join(target_file);
+
+        match fs::read(&full_path) {
+            Ok(content) => {
+                let path_str = full_path.to_string_lossy();
+                let mime = if path_str.ends_with(".html") {
+                    "text/html"
+                } else if path_str.ends_with(".css") {
+                    "text/css"
+                } else if path_str.ends_with(".js") {
+                    "application/javascript"
+                } else if path_str.ends_with(".png") {
+                    "image/png"
+                } else if path_str.ends_with(".svg") {
+                    "image/svg+xml"
+                } else {
+                    "application/octet-stream"
+                };
+                send_file_response(stream, 200, "OK", mime, &content);
+            }
+            Err(e) => {
+                eprintln!("Failed to read file {:?}: {}", full_path, e);
+                send_html_response(stream, 404, "Not Found", "<h1>404 Not Found</h1>");
+            }
+        }
+        return;
+    }
+
     if !is_post {
-        send_response(stream, 405, "Method Not Allowed", &serde_json::json!({ "error": "Only POST or OPTIONS methods are supported" }));
+        send_response(stream, 405, "Method Not Allowed", &serde_json::json!({ "error": "Only POST, GET or OPTIONS methods are supported" }));
         return;
     }
 
@@ -865,6 +956,23 @@ fn send_response(mut stream: TcpStream, status_code: u16, status_text: &str, bod
     let response = format!(
         "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\n\r\n{}",
         status_code, status_text, body_str.len(), body_str
+    );
+    let _ = stream.write_all(response.as_bytes());
+}
+
+fn send_file_response(mut stream: TcpStream, status_code: u16, status_text: &str, mime_type: &str, content: &[u8]) {
+    let response = format!(
+        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\n\r\n",
+        status_code, status_text, mime_type, content.len()
+    );
+    let _ = stream.write_all(response.as_bytes());
+    let _ = stream.write_all(content);
+}
+
+fn send_html_response(mut stream: TcpStream, status_code: u16, status_text: &str, body: &str) {
+    let response = format!(
+        "HTTP/1.1 {} {}\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\n\r\n{}",
+        status_code, status_text, body.len(), body
     );
     let _ = stream.write_all(response.as_bytes());
 }

@@ -78,6 +78,11 @@ if (Test-Path $assetsPath) {
     }
 }
 
+$webPath = Join-Path $ProjectRoot "web"
+if (Test-Path $webPath) {
+    Copy-Item -Path $webPath -Destination (Join-Path $AppDir "web") -Recurse -Force
+}
+
 Write-Host "==> Done"
 Write-Host "Bundle: $AppDir"
 Write-Host "Binary: $BinPath"

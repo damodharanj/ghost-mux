@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ghost-mux Web IDE — Terminal Dashboard</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- xterm.css -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
+    
+    <!-- Custom styling -->
+    <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+    <div class="app-container">
+        <!-- Top Navigation Bar -->
+        <header class="app-header">
+            <div class="brand">
+                <svg class="logo" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+                    <rect x="15" y="15" width="70" height="70" rx="15" fill="none" stroke="currentColor" stroke-width="8"/>
+                    <path d="M50 15 V 85 M 15 50 H 85" stroke="currentColor" stroke-width="8" stroke-dasharray="4 4"/>
+                    <circle cx="50" cy="50" r="12" fill="currentColor"/>
+                </svg>
+                <span class="title">GHOST-MUX</span>
+                <span class="badge badge-primary">Web Client</span>
+            </div>
+            
+            <div class="header-controls">
+                <!-- Server connection setting -->
+                <div class="input-group">
+                    <span class="input-label">Server</span>
+                    <input type="text" id="server-url-input" placeholder="http://127.0.0.1:3030" value="" />
+                </div>
+                
+                <!-- Status Badge -->
+                <div id="connection-status" class="status-badge status-offline">
+                    <span class="status-indicator"></span>
+                    <span class="status-text">Disconnected</span>
+                </div>
+
+                <button id="spawn-root-btn" class="btn btn-accent" style="display: none;">
+                    Spawn Terminal
+                </button>
+            </div>
+        </header>
+
+        <!-- Main Workspace split/layout container -->
+        <main class="app-workspace">
+            <!-- Left Sidebar container -->
+            <aside class="sidebar-container">
+                <!-- Icon Strip -->
+                <div class="sidebar-rail">
+                    <button class="rail-btn active" data-tab="explorer" title="File Explorer">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                        </svg>
+                    </button>
+                    <button class="rail-btn" data-tab="git" title="Source Control">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="18" cy="18" r="3" />
+                            <circle cx="6" cy="6" r="3" />
+                            <circle cx="6" cy="18" r="3" />
+                            <path d="M18 15V9a4 4 0 0 0-4-4H9M6 9v6" />
+                        </svg>
+                    </button>
+                    <button class="rail-btn" data-tab="sessions" title="PTY Sessions">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <rect x="2" y="3" width="20" height="14" rx="2" />
+                            <path d="M8 21h8M12 17v4" />
+                        </svg>
+                    </button>
+                </div>
+                
+                <!-- Panel content -->
+                <div class="sidebar-panel">
+                    <!-- Explorer Tab -->
+                    <div class="sidebar-content active" id="tab-explorer">
+                        <div class="sidebar-header">
+                            <h4>Explorer</h4>
+                            <div class="explorer-actions">
+                                <button id="new-file-root-btn" class="action-btn" title="New File">📄+</button>
+                                <button id="new-folder-root-btn" class="action-btn" title="New Folder">📁+</button>
+                                <button id="refresh-explorer-btn" class="action-btn" title="Refresh">🔄</button>
+                            </div>
+                        </div>
+                        <div class="explorer-path">
+                            <span id="current-root-path">Workspace: ./</span>
+                        </div>
+                        <div id="file-tree" class="file-tree">
+                            <!-- Loaded dynamically -->
+                        </div>
+                    </div>
+
+                    <!-- Git Tab -->
+                    <div class="sidebar-content" id="tab-git">
+                        <div class="sidebar-header">
+                            <h4>Source Control</h4>
+                            <button id="refresh-git-btn" class="action-btn" title="Refresh">🔄</button>
+                        </div>
+                        <div class="git-branch-info">
+                            <span>🌿</span>&nbsp;
+                            <span id="git-branch-name">loading...</span>
+                        </div>
+                        <div class="git-status-view">
+                            <div class="git-section-title">
+                                <span>Changes</span>
+                                <button id="git-stage-all-btn" class="btn-text">Stage All</button>
+                            </div>
+                            <div id="git-changes-list" class="git-changes-list">
+                                <!-- Loaded dynamically -->
+                            </div>
+                            
+                            <div class="git-commit-box">
+                                <textarea id="git-commit-msg" placeholder="Commit message... (Cmd+Enter to commit)"></textarea>
+                                <div class="git-commit-actions">
+                                    <button id="git-commit-btn" class="btn btn-primary btn-block">Commit</button>
+                                    <button id="git-push-btn" class="btn btn-secondary btn-block">Push</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Sessions Tab -->
+                    <div class="sidebar-content" id="tab-sessions">
+                        <div class="sidebar-header">
+                            <h4>PTY Sessions</h4>
+                            <button id="new-session-btn" class="btn btn-accent btn-sm">+ New</button>
+                        </div>
+                        <div id="sessions-list" class="sessions-list">
+                            <!-- Loaded dynamically -->
+                        </div>
+                    </div>
+                </div>
+            </aside>
+
+            <!-- Main Workspace view -->
+            <div id="workspace-root" class="workspace-viewport">
+                <!-- Rendered dynamically by app.js -->
+            </div>
+        </main>
+    </div>
+
+    <!-- Modal Dialog: File Editor -->
+    <div id="editor-modal" class="modal-overlay modal-closed">
+        <div class="modal-card modal-lg">
+            <div class="modal-header">
+                <h4 id="editor-file-title">Editing File</h4>
+                <button id="close-editor-modal-btn" class="btn-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <textarea id="editor-textarea" spellcheck="false"></textarea>
+            </div>
+            <div class="modal-footer">
+                <button id="save-editor-btn" class="btn btn-primary">Save Changes</button>
+                <button id="cancel-editor-btn" class="btn btn-secondary">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal Dialog: Git Diff Viewer -->
+    <div id="diff-modal" class="modal-overlay modal-closed">
+        <div class="modal-card modal-lg">
+            <div class="modal-header">
+                <h4 id="diff-file-title">Git Diff</h4>
+                <button id="close-diff-modal-btn" class="btn-close">&times;</button>
+            </div>
+            <div class="modal-body pre-scrollable">
+                <pre id="diff-content-view"></pre>
+            </div>
+            <div class="modal-footer">
+                <button id="close-diff-btn" class="btn btn-secondary">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- xterm.js & fit addon -->
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+    
+    <!-- Application Logic -->
+    <script src="app.js"></script>
+</body>
+</html>

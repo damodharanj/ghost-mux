@@ -8,6 +8,15 @@ pub fn call_remote_api(server_url: &str, method: &str, params: Value) -> Result<
         url = format!("http://{}", url);
     }
 
+    // Ensure the path is routed to /api to align native client and web client request paths
+    if !url.ends_with("/api") && !url.ends_with("/api/") {
+        if url.ends_with('/') {
+            url = format!("{}api", url);
+        } else {
+            url = format!("{}/api", url);
+        }
+    }
+
     let req = serde_json::json!({
         "method": method,
         "params": params,

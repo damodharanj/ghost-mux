@@ -77,6 +77,10 @@ if [[ -d "$PROJECT_ROOT/assets" ]]; then
   rm -rf "$APP_DIR/assets/design"
 fi
 
+if [[ -d "$PROJECT_ROOT/web" ]]; then
+  cp -R "$PROJECT_ROOT/web" "$APP_DIR/web"
+fi
+
 is_macos_system_lib() {
   local dep="$1"
   [[ "$dep" == /usr/lib/* ]] ||
