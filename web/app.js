@@ -247,7 +247,7 @@ function checkPtyInTree(node, ptyId) {
 // Layout Mutations
 async function spawnRootTerminal() {
     try {
-        const res = await callRpc('pty.spawn', { cwd: '/' });
+        const res = await callRpc('pty.spawn', { cwd: '.' });
         rootNode = new LayoutNode('leaf', nextNodeId++, res.pty_id);
         saveLayout();
         renderWorkspace();
@@ -274,7 +274,7 @@ async function splitPanel(nodeId, splitType) {
     renderWorkspace();
 
     try {
-        const res = await callRpc('pty.spawn', { cwd: '/' });
+        const res = await callRpc('pty.spawn', { cwd: '.' });
         node.right.ptyId = res.pty_id;
         saveLayout();
         renderWorkspace();
@@ -1152,7 +1152,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Sessions Panel Actions
     document.getElementById('new-session-btn').addEventListener('click', async () => {
         try {
-            const res = await callRpc('pty.spawn', { cwd: '/' });
+            const res = await callRpc('pty.spawn', { cwd: '.' });
             checkConnection();
             attachPtyToWorkspace(res.pty_id);
         } catch (err) {

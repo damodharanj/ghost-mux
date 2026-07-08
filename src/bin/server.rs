@@ -760,36 +760,9 @@ fn handle_hook(path: &str, req_body: &str, server_state: &ServerState) -> Result
     }
 }
 
-fn find_web_directory() -> std::path::PathBuf {
-    // 1. Check if "web" directory exists in the current working directory.
-    if Path::new("web").is_dir() {
-        return std::path::PathBuf::from("web");
-    }
-
-    // 2. Check relative to the executable's location.
-    if let Ok(exe_path) = std::env::current_exe() {
-        if let Some(exe_dir) = exe_path.parent() {
-            // Next to the executable (e.g. dist/ghost-mux/web)
-            let sibling_web = exe_dir.join("web");
-            if sibling_web.is_dir() {
-                return sibling_web;
-            }
-
-            // Inside macOS App Bundle (e.g. Ghost-mux.app/Contents/MacOS/ghost-mux-server -> Contents/Resources/web)
-            if exe_path.to_string_lossy().contains(".app/Contents/MacOS/") {
-                if let Some(contents_dir) = exe_dir.parent() {
-                    let resources_web = contents_dir.join("Resources/web");
-                    if resources_web.is_dir() {
-                        return resources_web;
-                    }
-                }
-            }
-        }
-    }
-
-    // Fallback to "web" in CWD
-    std::path::PathBuf::from("web")
-}
+const INDEX_HTML: &[u8] = include_bytes!("../../web/index.html");
+const APP_JS: &[u8] = include_bytes!("../../web/app.js");
+const STYLE_CSS: &[u8] = include_bytes!("../../web/style.css");
 
 // HTTP Connection handling
 fn handle_connection(mut stream: TcpStream, server_state: Arc<ServerState>) {
@@ -850,34 +823,23 @@ fn handle_connection(mut stream: TcpStream, server_state: Arc<ServerState>) {
             return;
         }
 
-        let web_dir = find_web_directory();
         let target_file = if file_path == "/" {
             "index.html"
         } else {
             file_path.strip_prefix('/').unwrap_or(file_path)
         };
-        let full_path = web_dir.join(target_file);
 
-        match fs::read(&full_path) {
-            Ok(content) => {
-                let path_str = full_path.to_string_lossy();
-                let mime = if path_str.ends_with(".html") {
-                    "text/html"
-                } else if path_str.ends_with(".css") {
-                    "text/css"
-                } else if path_str.ends_with(".js") {
-                    "application/javascript"
-                } else if path_str.ends_with(".png") {
-                    "image/png"
-                } else if path_str.ends_with(".svg") {
-                    "image/svg+xml"
-                } else {
-                    "application/octet-stream"
-                };
-                send_file_response(stream, 200, "OK", mime, &content);
+        match target_file {
+            "index.html" => {
+                send_file_response(stream, 200, "OK", "text/html", INDEX_HTML);
             }
-            Err(e) => {
-                eprintln!("Failed to read file {:?}: {}", full_path, e);
+            "app.js" => {
+                send_file_response(stream, 200, "OK", "application/javascript", APP_JS);
+            }
+            "style.css" => {
+                send_file_response(stream, 200, "OK", "text/css", STYLE_CSS);
+            }
+            _ => {
                 send_html_response(stream, 404, "Not Found", "<h1>404 Not Found</h1>");
             }
         }
