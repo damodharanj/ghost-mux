@@ -109,6 +109,29 @@ To fix this and run the app, you just need to clear the quarantine flag:
 3. Launch **Ghost-mux** normally!
 
 
+#### Linux Development & Production Build (including GitHub Codespaces)
+
+- **Prerequisites**:
+  Since Zig compiles C++ dependencies using its bundled Clang toolchain, it targets LLVM's `libc++`. You must install the LLVM C++ standard library development packages:
+  ```bash
+  sudo apt-get update
+  sudo apt-get install -y libc++-dev libc++abi-dev
+  ```
+
+- **Ensure local Zig is cached**:
+  ```bash
+  ./tools/linux/ensure-zig.sh
+  ```
+- **Run in Development mode**:
+  ```bash
+  ./tools/linux/dev-run.sh
+  ```
+- **Build Production Release Bundle**:
+  ```bash
+  ./tools/linux/build-production.sh
+  ```
+
+
 #### Windows Development & Production Build (PowerShell)
 
 - **Ensure local Zig is cached**:

@@ -107,12 +107,13 @@ Dashboard panels can load different components represented by the [PanelContent]
 | [ghost-mux-server/src/main.rs](file:///Users/saranyadamo/Downloads/ghost-mux/ghost-mux-server/src/main.rs) | Headless Server — processes JSON-RPC requests (such as [pty.list](file:///Users/saranyadamo/Downloads/ghost-mux/ghost-mux-server/src/main.rs#L520)), and serves embedded static files for the Web Dashboard |
 | [src/terminal/mod.rs](file:///Users/saranyadamo/Downloads/ghost-mux/src/terminal/mod.rs) | PTY stream wrapper [TerminalModel](file:///Users/saranyadamo/Downloads/ghost-mux/src/terminal/mod.rs#L39) implementing terminal emulation via `libghostty-vt` bindings |
 | [.github/workflows/build.yml](file:///Users/saranyadamo/Downloads/ghost-mux/.github/workflows/build.yml) | GitHub Actions CI build & release workflow |
+| [.devcontainer/devcontainer.json](file:///Users/saranyadamo/ghost-mux/.devcontainer/devcontainer.json) | VS Code devcontainer configuration for development environment |
 | [Cargo.toml](file:///Users/saranyadamo/Downloads/ghost-mux/Cargo.toml) | Cargo workspace manifest |
 | [rust-toolchain.toml](file:///Users/saranyadamo/Downloads/ghost-mux/rust-toolchain.toml) | Workspace Rust compiler version override |
 | [settings.yaml](file:///Users/saranyadamo/Downloads/ghost-mux/settings.yaml) | Runtime fonts, styling boundaries, radius configurations |
 | [dashboard_state.yaml](file:///Users/saranyadamo/Downloads/ghost-mux/dashboard_state.yaml) | Auto-generated persistence of layouts, tab mappings, and ratios |
 | [Todo.md](file:///Users/saranyadamo/Downloads/ghost-mux/Todo.md) | Ongoing roadmap goals (LSP support, Mobile, Syntax highlight, etc.) |
-| [README.md](file:///Users/saranyadamo/Downloads/ghost-mux/README.md) | User overview, instructions, and macOS Gatekeeper troubleshooting |
+| [README.md](file:///Users/saranyadamo/ghost-mux/README.md) | User overview, instructions, macOS Gatekeeper troubleshooting, and Linux / Codespaces build guidelines |
 | [Wasm_Compilation_Guide.md](file:///Users/saranyadamo/Downloads/ghost-mux/Wasm_Compilation_Guide.md) | Guide for client-server WebAssembly (Wasm) compilation, blockers, and architecture |
 | [patches/libghostty-vt-sys](file:///Users/saranyadamo/Downloads/ghost-mux/patches/libghostty-vt-sys) | Vendored bindings of `libghostty-vt` with a custom Zig-based [build.rs](file:///Users/saranyadamo/Downloads/ghost-mux/patches/libghostty-vt-sys/build.rs#L176) detecting the repo-local Zig compiler |
 | [patches/gpui-component](file:///Users/saranyadamo/Downloads/ghost-mux/patches/gpui-component) | Local component toolkit fork modifying panel restoring behavior |
@@ -203,14 +204,14 @@ Windows: no bundling needed; PE binaries link against system DLLs.
 | [tools/windows/run-production.ps1](file:///Users/saranyadamo/Downloads/ghost-mux/tools/windows/run-production.ps1) | Windows PowerShell |
 | [tools/windows/run-production.cmd](file:///Users/saranyadamo/Downloads/ghost-mux/tools/windows/run-production.cmd) | Windows cmd |
 
-macOS: launches the `Ghost-mux.app` bundle via macOS `open`. Note that for pre-built release bundles downloaded directly from GitHub Releases, macOS Gatekeeper may block execution. The user can clear the quarantine attribute via `xattr -cr /Applications/Ghost-mux.app` to resolve this (see [README.md](file:///Users/saranyadamo/Downloads/ghost-mux/README.md) for more details).
+macOS: launches the `Ghost-mux.app` bundle via macOS `open`. Note that for pre-built release bundles downloaded directly from GitHub Releases, macOS Gatekeeper may block execution. The user can clear the quarantine attribute via `xattr -cr /Applications/Ghost-mux.app` to resolve this (see [README.md](file:///Users/saranyadamo/ghost-mux/README.md#L96-L109) for more details).
 Linux: prefers `run.sh` wrapper inside the bundle (Linux fallback) over calling the binary directly.
 
 ---
 
 ## Development Workflow
 
-### macOS / Linux
+### macOS
 
 ```bash
 # Install repo-local Zig (first time or to update)
@@ -222,7 +223,7 @@ cargo check
 # Dev run GUI app
 ./tools/macos/dev-run.sh
 
-# Dev run server separately
+# Dev run GUI and server separately
 ./tools/macos/dev-run-server.sh
 
 # Dev run GUI and server together
@@ -233,6 +234,34 @@ cargo check
 
 # Launch bundled binary
 ./tools/macos/run-production.sh
+```
+
+### Linux (including GitHub Codespaces)
+
+For Linux environments and GitHub Codespaces, install the LLVM C++ standard library prerequisites before setup:
+
+```bash
+# Install LLVM C++ prerequisites
+sudo apt-get update
+sudo apt-get install -y libc++-dev libc++abi-dev
+
+# Install repo-local Zig (first time or to update)
+./tools/linux/ensure-zig.sh
+
+# Quick type check
+cargo check
+
+# Dev run GUI app
+./tools/linux/dev-run.sh
+
+# Dev run server separately
+./tools/linux/dev-run-server.sh
+
+# Production bundle → dist/<bin>/
+./tools/linux/build-production.sh
+
+# Launch bundled binary
+./tools/linux/run-production.sh
 ```
 
 ### Windows (PowerShell)
