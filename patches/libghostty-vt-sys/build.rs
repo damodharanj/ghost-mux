@@ -45,6 +45,7 @@ fn main() {
     let zig = resolve_zig_executable();
     let mut build = Command::new(&zig);
     build
+        .env_remove("MACOSX_DEPLOYMENT_TARGET")
         .arg("build")
         .arg("-Demit-lib-vt")
         .arg("--prefix")
