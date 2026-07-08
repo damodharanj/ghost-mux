@@ -16,4 +16,4 @@ fi
 "$PROJECT_ROOT/tools/setup-patches.sh"
 
 cd "$PROJECT_ROOT"
-exec "$CARGO_BIN" run --bin ghost-mux-server "$@"
+exec "$CARGO_BIN" run --manifest-path ghost-mux-server/Cargo.toml --target-dir target "$@"

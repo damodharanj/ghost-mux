@@ -49,6 +49,7 @@ mkdir -p "$LIB_DIR"
 
 echo "==> Building release binary"
 "$CARGO_BIN" build --release
+"$CARGO_BIN" build --release --manifest-path "$PROJECT_ROOT/ghost-mux-server/Cargo.toml" --target-dir "$PROJECT_ROOT/target"
 
 SOURCE_BIN="$PROJECT_ROOT/target/release/$BIN_NAME$EXEC_EXT"
 if [[ ! -f "$SOURCE_BIN" ]]; then

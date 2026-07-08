@@ -17,5 +17,5 @@ if ($env:CARGO -and (Test-Path $env:CARGO)) {
 
 Set-Location $ProjectRoot
 & (Join-Path $ProjectRoot "tools" "setup-patches.ps1")
-& $CargoBin run --bin ghost-mux-server @args
+& $CargoBin run --manifest-path (Join-Path $ProjectRoot "ghost-mux-server" "Cargo.toml") --target-dir (Join-Path $ProjectRoot "target") @args
 exit $LASTEXITCODE

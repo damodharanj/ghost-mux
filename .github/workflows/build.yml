@@ -101,10 +101,14 @@ jobs:
           ./tools/setup-patches.sh
 
       - name: Cargo check
-        run: cargo check
+        run: |
+          cargo check
+          cargo check --manifest-path ghost-mux-server/Cargo.toml --target-dir target
 
       - name: Cargo test
-        run: cargo test
+        run: |
+          cargo test
+          cargo test --manifest-path ghost-mux-server/Cargo.toml --target-dir target
 
       - name: Build production bundle
         run: |

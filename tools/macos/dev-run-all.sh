@@ -11,7 +11,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$PROJECT_ROOT"
 
 echo "==> Starting ghost-mux-server in background (port 3030)..."
-cargo run --bin ghost-mux-server -- --port 3030 &
+cargo run --manifest-path ghost-mux-server/Cargo.toml --target-dir target -- --port 3030 &
 SERVER_PID=$!
 
 # Ensure server is cleaned up when this runner script exits

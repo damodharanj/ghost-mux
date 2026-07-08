@@ -20,7 +20,7 @@ Set-Location $ProjectRoot
 
 Write-Host "==> Starting ghost-mux-server in background..."
 # Start server process in background
-$ServerJob = Start-Process -FilePath $CargoBin -ArgumentList "run", "--bin", "ghost-mux-server", "--", "--port", "3030" -PassThru -NoNewWindow
+$ServerJob = Start-Process -FilePath $CargoBin -ArgumentList "run", "--manifest-path", "ghost-mux-server/Cargo.toml", "--target-dir", "target", "--", "--port", "3030" -PassThru -NoNewWindow
 
 Start-Sleep -Seconds 2
 

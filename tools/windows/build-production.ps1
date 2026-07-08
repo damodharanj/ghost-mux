@@ -51,6 +51,7 @@ New-Item -ItemType Directory -Path $LibDir | Out-Null
 
 Write-Host "==> Building release binary"
 & $CargoBin build --release
+& $CargoBin build --release --manifest-path (Join-Path $ProjectRoot "ghost-mux-server" "Cargo.toml") --target-dir (Join-Path $ProjectRoot "target")
 
 $SourceBin = Join-Path $ProjectRoot "target/release/$BinName.exe"
 if (-not (Test-Path $SourceBin)) {
