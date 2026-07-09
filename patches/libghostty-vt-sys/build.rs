@@ -39,6 +39,13 @@ fn main() {
         Err(_) => fetch_ghostty(&out_dir),
     };
 
+    // Clean .zig-cache to prevent stale cache or compiler-rt version mismatch issues
+    // across different GitHub Actions runner OS/SDK versions.
+    let zig_cache = ghostty_dir.join(".zig-cache");
+    if zig_cache.exists() {
+        let _ = std::fs::remove_dir_all(&zig_cache);
+    }
+
     // Build libghostty-vt via zig.
     let install_prefix = out_dir.join("ghostty-install");
 
@@ -46,8 +53,8 @@ fn main() {
     let mut build = Command::new(&zig);
     build
         .env_remove("MACOSX_DEPLOYMENT_TARGET")
-        .env_remove("SDKROOT")
-        .env_remove("DEVELOPER_DIR")
+        // Do NOT remove SDKROOT and DEVELOPER_DIR on macOS. They are required
+        // on headless CI runners so Zig can correctly link against libSystem.dylib.
         .arg("build")
         .arg("-Demit-lib-vt")
         .arg("--prefix")
