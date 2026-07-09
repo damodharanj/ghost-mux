@@ -46,6 +46,8 @@ fn main() {
     let mut build = Command::new(&zig);
     build
         .env_remove("MACOSX_DEPLOYMENT_TARGET")
+        .env_remove("SDKROOT")
+        .env_remove("DEVELOPER_DIR")
         .arg("build")
         .arg("-Demit-lib-vt")
         .arg("--prefix")
