@@ -115,7 +115,7 @@ Dashboard panels can load different components represented by the [PanelContent]
 | [Todo.md](file:///Users/saranyadamo/Downloads/ghost-mux/Todo.md) | Ongoing roadmap goals (LSP support, Mobile, Syntax highlight, etc.) |
 | [README.md](file:///Users/saranyadamo/ghost-mux/README.md) | User overview, instructions, macOS Gatekeeper troubleshooting, and Linux / Codespaces build guidelines |
 | [Wasm_Compilation_Guide.md](file:///Users/saranyadamo/Downloads/ghost-mux/Wasm_Compilation_Guide.md) | Guide for client-server WebAssembly (Wasm) compilation, blockers, and architecture |
-| [patches/libghostty-vt-sys](file:///Users/saranyadamo/Downloads/ghost-mux/patches/libghostty-vt-sys) | Vendored bindings of `libghostty-vt` with a custom Zig-based [build.rs](file:///Users/saranyadamo/Downloads/ghost-mux/patches/libghostty-vt-sys/build.rs#L185) detecting the repo-local Zig compiler |
+| [patches/libghostty-vt-sys](file:///Users/saranyadamo/Downloads/ghost-mux/patches/libghostty-vt-sys) | Vendored bindings of `libghostty-vt` with a custom Zig-based [build.rs](file:///Users/saranyadamo/Downloads/ghost-mux/patches/libghostty-vt-sys/build.rs#L194) detecting the repo-local Zig compiler |
 | [patches/gpui-component](file:///Users/saranyadamo/Downloads/ghost-mux/patches/gpui-component) | Local component toolkit fork modifying panel restoring behavior |
 | [patches/gpui-component.patch](file:///Users/saranyadamo/Downloads/ghost-mux/patches/gpui-component.patch) | Git patch applied to upstream gpui-component repository |
 | [tools/setup-patches.sh](file:///Users/saranyadamo/Downloads/ghost-mux/tools/setup-patches.sh) | Shell script to clone and patch gpui-component on Unix/macOS |
@@ -174,7 +174,7 @@ Zig is managed **inside this repo** — no system-wide install needed.
 | [tools/windows/ensure-zig.cmd](file:///Users/saranyadamo/Downloads/ghost-mux/tools/windows/ensure-zig.cmd) | Windows cmd shim → [tools/windows/ensure-zig.ps1](file:///Users/saranyadamo/Downloads/ghost-mux/tools/windows/ensure-zig.ps1) |
 
 - Called automatically by [tools/linux/build-production.sh](file:///Users/saranyadamo/Downloads/ghost-mux/tools/linux/build-production.sh) / [tools/windows/build-production.ps1](file:///Users/saranyadamo/Downloads/ghost-mux/tools/windows/build-production.ps1).
-- For plain `cargo check` / `cargo build`, the [build.rs](file:///Users/saranyadamo/Downloads/ghost-mux/patches/libghostty-vt-sys/build.rs#L185) in [patches/libghostty-vt-sys](file:///Users/saranyadamo/Downloads/ghost-mux/patches/libghostty-vt-sys) walks up from `CARGO_MANIFEST_DIR` to find `.tools/zig/toolchain/zig[.exe]` automatically — no env var needed.
+- For plain `cargo check` / `cargo build`, the [build.rs](file:///Users/saranyadamo/Downloads/ghost-mux/patches/libghostty-vt-sys/build.rs#L194) in [patches/libghostty-vt-sys](file:///Users/saranyadamo/Downloads/ghost-mux/patches/libghostty-vt-sys) walks up from `CARGO_MANIFEST_DIR` to find `.tools/zig/toolchain/zig[.exe]` automatically — no env var needed.
 - Pin a different version: `ZIG_VERSION=0.16.0 [./tools/linux/ensure-zig.sh](file:///Users/saranyadamo/Downloads/ghost-mux/tools/linux/ensure-zig.sh)`
 
 ### Production Bundle
