@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Configuration for C++ runtime library (libstdc++) dependency:
+# - STATIC_LIBSTDCXX=1 (default): Statically link libstdc++ and libgcc to remove the dynamic dependency.
+# - BUNDLE_LIBSTDCXX=1 (default 0): Copy libstdc++.so and libgcc_s.so into the app bundle's lib directory.
+STATIC_LIBSTDCXX="${STATIC_LIBSTDCXX:-1}"
+BUNDLE_LIBSTDCXX="${BUNDLE_LIBSTDCXX:-0}"
+export STATIC_LIBSTDCXX
+export BUNDLE_LIBSTDCXX
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CARGO_BIN="${CARGO:-$HOME/.cargo/bin/cargo}"
@@ -204,11 +212,25 @@ bundle_linux_deps() {
 
   while IFS= read -r dep; do
     [[ -z "$dep" ]] && continue
+    
+    local is_system=0
     if [[ "$dep" == /lib/* ]] || [[ "$dep" == /usr/lib/* ]]; then
-      continue
+      is_system=1
     fi
+    
     local base
     base="$(basename "$dep")"
+    if [[ "$is_system" -eq 1 ]]; then
+      # If bundling is enabled, copy libstdc++ and libgcc_s even if they are in system paths
+      if [[ "$BUNDLE_LIBSTDCXX" == "1" ]] && [[ "$base" == libstdc++* || "$base" == libgcc_s* ]]; then
+        is_system=0
+      fi
+    fi
+
+    if [[ "$is_system" -eq 1 ]]; then
+      continue
+    fi
+
     cp "$dep" "$LIB_DIR/$base"
     copied_any=1
   done < <(ldd "$root_binary" | awk '/=> \// { print $3 }')

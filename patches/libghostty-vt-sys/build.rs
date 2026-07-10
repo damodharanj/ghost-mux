@@ -128,7 +128,16 @@ fn main() {
         println!("cargo:rustc-link-lib=framework=CoreFoundation");
         println!("cargo:rustc-link-lib=c++");
     } else if target.contains("linux") {
-        println!("cargo:rustc-link-lib=c++");
+        let static_stdcxx = env::var("STATIC_LIBSTDCXX").map(|v| v == "1").unwrap_or(false);
+        if static_stdcxx {
+            println!("cargo:rustc-link-lib=stdc++");
+            println!("cargo:rustc-link-arg=-static-libstdc++");
+            println!("cargo:rustc-link-arg=-static-libgcc");
+        } else if env::var("USE_LIBCXX").map(|v| v == "1").unwrap_or(false) {
+            println!("cargo:rustc-link-lib=c++");
+        } else {
+            println!("cargo:rustc-link-lib=stdc++");
+        }
     }
     println!("cargo:include={}", include_dir.display());
 }

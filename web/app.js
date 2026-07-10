@@ -19,6 +19,8 @@ let isConnected = false;
 const expandedPaths = new Set(['.']); // Tracks expanded folders in file tree
 let editingFilePath = '';
 let activeSidebarTab = 'explorer';
+let latestSessionsState = []; // Cache of latest PTY sessions from server
+let activeMobileNodeId = null; // Currently active PTY leaf node ID on mobile
 
 // Initialize Server URL
 function initServerUrl() {
@@ -81,10 +83,17 @@ async function checkConnection() {
         statusBadge.className = 'status-badge status-online';
         statusText.textContent = 'Connected';
         
+        latestSessionsState = result.sessions || [];
+        
         // Update tabs according to active view
         if (activeSidebarTab === 'sessions') {
             updateSessionsList(result.sessions || []);
         }
+        
+        // Update status badges for all active sessions
+        latestSessionsState.forEach(s => {
+            updatePtyStatusBadges(s.pty_id, s.running_agent, s.last_event);
+        });
     } catch (err) {
         isConnected = false;
         statusBadge.className = 'status-badge status-offline';
@@ -95,6 +104,12 @@ async function checkConnection() {
             </div>
         `;
     }
+}
+
+function getWebSocketUrl(ptyId) {
+    const serverUrl = getServerUrl();
+    const wsUrl = serverUrl.replace(/^http/, 'ws');
+    return `${wsUrl}/ws?pty_id=${ptyId}`;
 }
 
 // xterm.js Terminal Instance Manager
@@ -128,8 +143,47 @@ function getOrCreateTerminal(ptyId) {
     const fitAddon = new FitAddon.FitAddon();
     term.loadAddon(fitAddon);
 
+    let ws = null;
+    let reconnectTimeout = null;
+    let shouldReconnect = true;
+
+    function connectWs() {
+        if (!shouldReconnect) return;
+
+        const wsUrl = getWebSocketUrl(ptyId);
+        ws = new WebSocket(wsUrl);
+
+        ws.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                if (data.output) {
+                    term.write(data.output);
+                }
+                updatePtyStatusBadges(ptyId, data.running_agent, data.last_event);
+            } catch (e) {
+                console.error("Failed to parse WebSocket message:", e);
+            }
+        };
+
+        ws.onclose = (event) => {
+            console.log(`WebSocket closed for PTY ${ptyId}`, event);
+            if (shouldReconnect) {
+                clearTimeout(reconnectTimeout);
+                reconnectTimeout = setTimeout(connectWs, 2000);
+            }
+        };
+
+        ws.onerror = (err) => {
+            console.error(`WebSocket error for PTY ${ptyId}`, err);
+        };
+    }
+
+    connectWs();
+
     term.onData(data => {
-        if (isConnected) {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(data);
+        } else if (isConnected) {
             callRpc('pty.write', { pty_id: ptyId, input: data }).catch(err => {
                 console.error("Write error for PTY", ptyId, err);
             });
@@ -148,30 +202,19 @@ function getOrCreateTerminal(ptyId) {
         }, 150);
     });
 
-    const pollInterval = setInterval(async () => {
-        if (!isConnected) return;
-        
-        try {
-            const data = await callRpc('pty.read', { pty_id: ptyId });
-            if (data.output) {
-                term.write(data.output);
-            }
-            updatePtyStatusBadges(ptyId, data.running_agent, data.last_event);
-        } catch (err) {
-            if (err.message && err.message.includes("not found")) {
-                cleanupTerminal(ptyId);
-                closePtyInLayout(ptyId);
-            }
-        }
-    }, 60);
-
     const container = document.createElement('div');
     container.className = 'terminal-container';
     
     activeTerminals[ptyId] = {
         term,
         fitAddon,
-        pollInterval,
+        close: () => {
+            shouldReconnect = false;
+            clearTimeout(reconnectTimeout);
+            if (ws) {
+                ws.close();
+            }
+        },
         container
     };
 
@@ -182,7 +225,9 @@ function getOrCreateTerminal(ptyId) {
 function cleanupTerminal(ptyId) {
     const session = activeTerminals[ptyId];
     if (session) {
-        clearInterval(session.pollInterval);
+        if (session.close) {
+            session.close();
+        }
         session.term.dispose();
         delete activeTerminals[ptyId];
     }
@@ -230,6 +275,17 @@ function findFirstLeaf(node) {
     if (!node) return null;
     if (node.type === 'leaf') return node;
     return findFirstLeaf(node.left);
+}
+
+function getAllLeaves(node, list = []) {
+    if (!node) return list;
+    if (node.type === 'leaf') {
+        list.push(node);
+    } else {
+        getAllLeaves(node.left, list);
+        getAllLeaves(node.right, list);
+    }
+    return list;
 }
 
 function isPtyAttached(ptyId) {
@@ -522,36 +578,38 @@ function updatePtyStatusBadges(ptyId, runningAgent, lastEvent) {
     const agentBadge = document.getElementById(`agent-badge-${ptyId}`);
     const eventBadge = document.getElementById(`event-badge-${ptyId}`);
     
-    if (agentBadge) {
-        if (runningAgent) {
-            agentBadge.textContent = runningAgent;
-            agentBadge.style.display = 'inline-block';
-        } else {
-            agentBadge.style.display = 'none';
-        }
-    }
+    const mobAgentBadge = document.getElementById(`mobile-agent-badge-${ptyId}`);
+    const mobEventBadge = document.getElementById(`mobile-event-badge-${ptyId}`);
     
-    if (eventBadge) {
-        if (lastEvent) {
-            eventBadge.textContent = lastEvent;
-            if (lastEvent === 'Start') {
-                eventBadge.style.backgroundColor = 'rgba(87, 201, 148, 0.2)';
-                eventBadge.style.color = '#57c994';
-                eventBadge.style.border = '1px solid rgba(87, 201, 148, 0.3)';
-            } else if (lastEvent === 'Stop') {
-                eventBadge.style.backgroundColor = 'rgba(244, 112, 103, 0.2)';
-                eventBadge.style.color = '#f47067';
-                eventBadge.style.border = '1px solid rgba(244, 112, 103, 0.3)';
-            } else {
-                eventBadge.style.backgroundColor = 'var(--muted)';
-                eventBadge.style.color = 'var(--muted-foreground)';
-                eventBadge.style.border = '1px solid var(--border)';
+    const updateBadge = (badge, text, type) => {
+        if (!badge) return;
+        if (text) {
+            badge.textContent = text;
+            if (type === 'event') {
+                if (text === 'Start') {
+                    badge.style.backgroundColor = 'rgba(87, 201, 148, 0.2)';
+                    badge.style.color = '#57c994';
+                    badge.style.border = '1px solid rgba(87, 201, 148, 0.3)';
+                } else if (text === 'Stop') {
+                    badge.style.backgroundColor = 'rgba(244, 112, 103, 0.2)';
+                    badge.style.color = '#f47067';
+                    badge.style.border = '1px solid rgba(244, 112, 103, 0.3)';
+                } else {
+                    badge.style.backgroundColor = 'var(--muted)';
+                    badge.style.color = 'var(--muted-foreground)';
+                    badge.style.border = '1px solid var(--border)';
+                }
             }
-            eventBadge.style.display = 'inline-block';
+            badge.style.display = 'inline-block';
         } else {
-            eventBadge.style.display = 'none';
+            badge.style.display = 'none';
         }
-    }
+    };
+    
+    updateBadge(agentBadge, runningAgent, 'agent');
+    updateBadge(mobAgentBadge, runningAgent, 'agent');
+    updateBadge(eventBadge, lastEvent, 'event');
+    updateBadge(mobEventBadge, lastEvent, 'event');
 }
 
 // Workspace UI Render Trigger
@@ -577,12 +635,155 @@ function renderWorkspace() {
         return;
     }
     
-    const domNode = buildDomLayout(rootNode);
-    container.appendChild(domNode);
+    const isMobile = window.innerWidth <= 768;
     
-    setTimeout(() => {
-        fitAllTerminals(rootNode);
-    }, 50);
+    if (isMobile) {
+        const leaves = getAllLeaves(rootNode);
+        if (leaves.length === 0) {
+            container.innerHTML = `
+                <div class="empty-state">
+                    <div class="empty-content">
+                        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                            <rect x="3" y="3" width="18" height="18" rx="2" />
+                            <path d="M9 3v18M3 9h18" />
+                        </svg>
+                        <h3>No Active Layout</h3>
+                        <p>Connect to the headless IDE server or spawn a new terminal session to get started.</p>
+                        <button id="empty-spawn-btn" class="btn btn-accent">Spawn New Session</button>
+                    </div>
+                </div>
+            `;
+            document.getElementById('empty-spawn-btn').addEventListener('click', spawnRootTerminal);
+            return;
+        }
+        
+        let activeLeaf = leaves.find(l => l.id === activeMobileNodeId);
+        if (!activeLeaf) {
+            activeLeaf = leaves[0];
+            activeMobileNodeId = activeLeaf.id;
+        }
+        
+        const mobileWrapper = document.createElement('div');
+        mobileWrapper.className = 'mobile-workspace-wrapper';
+        
+        const tabBar = document.createElement('div');
+        tabBar.className = 'mobile-tab-bar';
+        
+        leaves.forEach(leaf => {
+            const tab = document.createElement('div');
+            tab.className = `mobile-tab ${leaf.id === activeMobileNodeId ? 'active' : ''}`;
+            
+            const label = document.createElement('span');
+            label.textContent = `Term (${leaf.ptyId || '...'})`;
+            tab.appendChild(label);
+            
+            const badgeContainer = document.createElement('span');
+            badgeContainer.style.display = 'inline-flex';
+            badgeContainer.style.gap = '4px';
+            badgeContainer.style.marginLeft = '4px';
+            
+            const agentBadge = document.createElement('span');
+            agentBadge.id = `mobile-agent-badge-${leaf.ptyId}`;
+            agentBadge.className = 'badge badge-primary';
+            agentBadge.style.fontSize = '8px';
+            agentBadge.style.padding = '1px 4px';
+            agentBadge.style.display = 'none';
+            badgeContainer.appendChild(agentBadge);
+
+            const eventBadge = document.createElement('span');
+            eventBadge.id = `mobile-event-badge-${leaf.ptyId}`;
+            eventBadge.className = 'badge';
+            eventBadge.style.fontSize = '8px';
+            eventBadge.style.padding = '1px 4px';
+            eventBadge.style.display = 'none';
+            badgeContainer.appendChild(eventBadge);
+
+            tab.appendChild(badgeContainer);
+            
+            tab.addEventListener('click', () => {
+                activeMobileNodeId = leaf.id;
+                renderWorkspace();
+            });
+            
+            const closeBtn = document.createElement('button');
+            closeBtn.className = 'mobile-tab-close';
+            closeBtn.textContent = '✕';
+            closeBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                closePanel(leaf.id);
+            });
+            tab.appendChild(closeBtn);
+            
+            tabBar.appendChild(tab);
+        });
+        
+        const addBtn = document.createElement('button');
+        addBtn.className = 'mobile-tab-add';
+        addBtn.textContent = '+';
+        addBtn.title = 'New Session';
+        addBtn.addEventListener('click', async () => {
+            try {
+                const res = await callRpc('pty.spawn', { cwd: '.' });
+                await attachPtyToWorkspace(res.pty_id);
+                const updatedLeaves = getAllLeaves(rootNode);
+                const newLeaf = updatedLeaves.find(l => l.ptyId === res.pty_id);
+                if (newLeaf) {
+                    activeMobileNodeId = newLeaf.id;
+                }
+                renderWorkspace();
+            } catch (err) {
+                alert("Failed to spawn terminal: " + err.message);
+            }
+        });
+        tabBar.appendChild(addBtn);
+        mobileWrapper.appendChild(tabBar);
+        
+        const contentWrapper = document.createElement('div');
+        contentWrapper.className = 'panel-content';
+        contentWrapper.style.flex = '1';
+        contentWrapper.style.position = 'relative';
+        contentWrapper.style.backgroundColor = 'var(--background)';
+        contentWrapper.style.padding = '8px';
+        contentWrapper.style.overflow = 'hidden';
+        
+        if (activeLeaf.ptyId) {
+            const session = getOrCreateTerminal(activeLeaf.ptyId);
+            contentWrapper.appendChild(session.container);
+        } else {
+            contentWrapper.innerHTML = `
+                <div class="empty-state">
+                    <div class="empty-content">
+                        <div class="status-badge status-online">
+                            <span class="status-indicator"></span>
+                            <span class="status-text">Creating session...</span>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+        mobileWrapper.appendChild(contentWrapper);
+        container.appendChild(mobileWrapper);
+        
+        latestSessionsState.forEach(s => {
+            updatePtyStatusBadges(s.pty_id, s.running_agent, s.last_event);
+        });
+        
+        setTimeout(() => {
+            if (activeLeaf.ptyId) {
+                const session = activeTerminals[activeLeaf.ptyId];
+                if (session) {
+                    session.fitAddon.fit();
+                }
+            }
+        }, 100);
+    } else {
+        const domNode = buildDomLayout(rootNode);
+        container.appendChild(domNode);
+        
+        setTimeout(() => {
+            fitAllTerminals(rootNode);
+        }, 50);
+    }
 }
 
 // Session List UI Render
@@ -1053,9 +1254,7 @@ function loadLayout() {
 
 // Window Event Listeners
 window.addEventListener('resize', () => {
-    if (rootNode) {
-        fitAllTerminals(rootNode);
-    }
+    renderWorkspace();
 });
 
 // App Entrypoint
@@ -1067,6 +1266,26 @@ document.addEventListener('DOMContentLoaded', () => {
     const tabContents = document.querySelectorAll('.sidebar-content');
     const sidebarContainer = document.querySelector('.sidebar-container');
     
+    // Helper to toggle backdrop
+    function toggleBackdrop(show) {
+        let backdrop = document.getElementById('sidebar-backdrop');
+        if (!backdrop) {
+            backdrop = document.createElement('div');
+            backdrop.id = 'sidebar-backdrop';
+            backdrop.className = 'sidebar-backdrop';
+            document.querySelector('.app-workspace').appendChild(backdrop);
+            backdrop.addEventListener('click', () => {
+                sidebarContainer.classList.remove('open');
+                toggleBackdrop(false);
+            });
+        }
+        if (show) {
+            backdrop.classList.add('active');
+        } else {
+            backdrop.classList.remove('active');
+        }
+    }
+
     railBtns.forEach(btn => {
         btn.addEventListener('click', () => {
             const targetTab = btn.getAttribute('data-tab');
@@ -1076,10 +1295,11 @@ document.addEventListener('DOMContentLoaded', () => {
             if (isMobile) {
                 if (isAlreadyActive && sidebarContainer.classList.contains('open')) {
                     sidebarContainer.classList.remove('open');
-                    btn.classList.remove('active');
+                    toggleBackdrop(false);
                     return;
                 } else {
                     sidebarContainer.classList.add('open');
+                    toggleBackdrop(true);
                 }
             }
             
@@ -1106,19 +1326,46 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
+    // Toggle Sidebar button in header (Hamburger Menu)
+    const sidebarToggleBtn = document.getElementById('sidebar-toggle-btn');
+    if (sidebarToggleBtn) {
+        sidebarToggleBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const isMobile = window.innerWidth <= 768;
+            if (isMobile) {
+                const isOpen = sidebarContainer.classList.contains('open');
+                if (isOpen) {
+                    sidebarContainer.classList.remove('open');
+                    toggleBackdrop(false);
+                } else {
+                    sidebarContainer.classList.add('open');
+                    toggleBackdrop(true);
+                    // Make sure a rail button is active if none is
+                    const hasActive = Array.from(railBtns).some(b => b.classList.contains('active'));
+                    if (!hasActive && railBtns.length > 0) {
+                        railBtns[0].click();
+                    }
+                }
+            } else {
+                document.querySelector('.app-container').classList.toggle('sidebar-collapsed');
+                setTimeout(() => {
+                    if (rootNode) fitAllTerminals(rootNode);
+                }, 250);
+            }
+        });
+    }
+
     // Close sidebar on mobile when workspace is clicked
     document.getElementById('workspace-root').addEventListener('click', () => {
         if (window.innerWidth <= 768 && sidebarContainer.classList.contains('open')) {
             sidebarContainer.classList.remove('open');
-            railBtns.forEach(b => b.classList.remove('active'));
+            toggleBackdrop(false);
         }
     });
 
     // Fit terminals after sidebar transition completes
     sidebarContainer.addEventListener('transitionend', () => {
-        if (rootNode) {
-            fitAllTerminals(rootNode);
-        }
+        renderWorkspace();
     });
 
     // Explorer Header Actions

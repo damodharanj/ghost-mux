@@ -818,6 +818,37 @@ fn handle_connection(mut stream: TcpStream, server_state: Arc<ServerState>) {
 
     if is_get {
         let file_path = path.split('?').next().unwrap_or("/");
+
+        if file_path == "/ws" {
+            let pty_id = if let Some(query_idx) = path.find('?') {
+                let query = &path[query_idx + 1..];
+                query.split('&')
+                    .find(|pair| pair.starts_with("pty_id="))
+                    .and_then(|pair| pair.split('=').nth(1))
+                    .map(|val| val.to_string())
+            } else {
+                None
+            };
+
+            if let Some(id) = pty_id {
+                let mut raw_headers = Vec::new();
+                for h in &headers {
+                    raw_headers.extend_from_slice(h.as_bytes());
+                }
+                raw_headers.extend_from_slice(b"\r\n");
+
+                let prefixed = PrefixedStream {
+                    prefix: std::io::Cursor::new(raw_headers),
+                    stream,
+                };
+
+                handle_websocket(prefixed, id, server_state);
+            } else {
+                let _ = stream.write_all(b"HTTP/1.1 400 Bad Request\r\n\r\nMissing pty_id parameter");
+            }
+            return;
+        }
+
         if file_path.contains("..") {
             send_html_response(stream, 403, "Forbidden", "<h1>403 Forbidden</h1>");
             return;
@@ -938,6 +969,115 @@ fn send_html_response(mut stream: TcpStream, status_code: u16, status_text: &str
     );
     let _ = stream.write_all(response.as_bytes());
 }
+
+struct PrefixedStream {
+    prefix: std::io::Cursor<Vec<u8>>,
+    stream: TcpStream,
+}
+
+impl std::io::Read for PrefixedStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.prefix.position() < self.prefix.get_ref().len() as u64 {
+            self.prefix.read(buf)
+        } else {
+            self.stream.read(buf)
+        }
+    }
+}
+
+impl std::io::Write for PrefixedStream {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.stream.write(buf)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.stream.flush()
+    }
+}
+
+fn handle_websocket(prefixed: PrefixedStream, pty_id: String, server_state: Arc<ServerState>) {
+    let _ = prefixed.stream.set_read_timeout(Some(Duration::from_millis(20)));
+
+    let mut ws = match tungstenite::accept(prefixed) {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("WebSocket handshake error: {:?}", e);
+            return;
+        }
+    };
+
+    let mut last_agent = None;
+    let mut last_event = None;
+
+    loop {
+        let (output, running_agent, last_event_val) = {
+            let ptys = server_state.ptys.lock().unwrap();
+            if let Some(pty) = ptys.get(&pty_id) {
+                let mut buf = pty.output_buffer.lock().unwrap();
+                let out = String::from_utf8_lossy(&buf).into_owned();
+                buf.clear();
+                (out, pty.running_agent.clone(), pty.last_event.clone())
+            } else {
+                break;
+            }
+        };
+
+        let agent_changed = running_agent != last_agent;
+        let event_changed = last_event_val != last_event;
+        if !output.is_empty() || agent_changed || event_changed {
+            last_agent = running_agent.clone();
+            last_event = last_event_val.clone();
+
+            let payload = serde_json::json!({
+                "output": output,
+                "running_agent": last_agent,
+                "last_event": last_event
+            });
+            if let Ok(msg_str) = serde_json::to_string(&payload) {
+                if let Err(_) = ws.send(tungstenite::Message::Text(msg_str)) {
+                    break;
+                }
+            }
+        }
+
+        match ws.read() {
+            Ok(msg) => {
+                match msg {
+                    tungstenite::Message::Text(text) => {
+                        let ptys = server_state.ptys.lock().unwrap();
+                        if let Some(pty) = ptys.get(&pty_id) {
+                            let mut w = pty.writer.lock().unwrap();
+                            let _ = w.write_all(text.as_bytes());
+                            let _ = w.flush();
+                        } else {
+                            break;
+                        }
+                    }
+                    tungstenite::Message::Binary(bin) => {
+                        let ptys = server_state.ptys.lock().unwrap();
+                        if let Some(pty) = ptys.get(&pty_id) {
+                            let mut w = pty.writer.lock().unwrap();
+                            let _ = w.write_all(&bin);
+                            let _ = w.flush();
+                        } else {
+                            break;
+                        }
+                    }
+                    tungstenite::Message::Close(_) => {
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            Err(tungstenite::Error::Io(ref err)) if err.kind() == std::io::ErrorKind::WouldBlock || err.kind() == std::io::ErrorKind::TimedOut => {
+                // Timeout expected, just loop
+            }
+            Err(_) => {
+                break;
+            }
+        }
+    }
+}
+
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();

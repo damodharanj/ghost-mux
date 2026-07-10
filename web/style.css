@@ -271,6 +271,29 @@ body, html {
     background-color: var(--background);
 }
 
+.sidebar-toggle-btn {
+    background: transparent;
+    border: none;
+    color: var(--muted-foreground);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 6px;
+    border-radius: var(--radius-sm);
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    margin-right: 4px;
+}
+
+.sidebar-toggle-btn:hover {
+    background-color: var(--muted);
+    color: #ffffff;
+}
+
+.sidebar-toggle-btn svg {
+    display: block;
+}
+
 /* Integrated Left Sidebar System */
 .sidebar-container {
     display: flex;
@@ -279,6 +302,13 @@ body, html {
     background-color: var(--sidebar);
     border-right: 1px solid var(--border);
     flex-shrink: 0;
+    transition: width 0.25s cubic-bezier(0.4, 0, 0.2, 1), transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.25s;
+}
+
+.sidebar-collapsed .sidebar-container {
+    width: 0 !important;
+    border-right: none !important;
+    overflow: hidden !important;
 }
 
 .sidebar-rail {
@@ -913,11 +943,14 @@ body, html {
     width: 100%;
     height: 100%;
     overflow: hidden;
+    background-color: var(--background);
+    padding: 6px;
+    border-radius: var(--radius-sm);
 }
 
 /* xterm.js customized overrides */
 .xterm {
-    padding: 4px;
+    padding: 10px 14px;
 }
 
 .xterm-viewport::-webkit-scrollbar {
@@ -1014,6 +1047,119 @@ body, html {
     background: var(--border);
 }
 
+/* Mobile Sidebar Backdrop Overlay */
+.sidebar-backdrop {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(3px);
+    z-index: 90;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.sidebar-backdrop.active {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+/* Mobile Workspace & Tab Bar */
+.mobile-workspace-wrapper {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+}
+
+.mobile-tab-bar {
+    display: flex;
+    align-items: center;
+    background-color: var(--secondary);
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+    padding: 6px 12px;
+    gap: 8px;
+    height: 44px; /* optimized for touch targets */
+    scrollbar-width: none;
+    flex-shrink: 0;
+}
+
+.mobile-tab-bar::-webkit-scrollbar {
+    display: none;
+}
+
+.mobile-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 14px;
+    background-color: var(--background);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--muted-foreground);
+    font-size: 12px;
+    font-family: var(--font-mono);
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.mobile-tab:hover {
+    color: #ffffff;
+    background-color: var(--muted);
+}
+
+.mobile-tab.active {
+    color: #ffffff;
+    background-color: var(--tab-active);
+    border-color: var(--accent);
+    box-shadow: 0 0 8px rgba(0, 122, 204, 0.3);
+}
+
+.mobile-tab-close {
+    background: transparent;
+    border: none;
+    color: var(--muted-foreground);
+    font-size: 11px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    transition: all 0.15s;
+}
+
+.mobile-tab-close:hover {
+    background-color: rgba(244, 112, 103, 0.2);
+    color: #f47067;
+}
+
+.mobile-tab-add {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: var(--radius-sm);
+    background-color: var(--muted);
+    border: 1px solid var(--border);
+    color: var(--foreground);
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: all 0.2s;
+    font-size: 16px;
+}
+
+.mobile-tab-add:hover {
+    background-color: var(--border);
+    color: #ffffff;
+}
 
 /* ========================================== */
 /* Mobile Responsiveness Styles                */
@@ -1022,7 +1168,7 @@ body, html {
 @media (max-width: 768px) {
     /* Header layout adjustments */
     .app-header {
-        padding: 0 10px;
+        padding: 0 12px;
     }
     
     .brand .logo,
@@ -1031,12 +1177,12 @@ body, html {
     }
     
     .brand .title {
-        font-size: 12px;
+        font-size: 13px;
     }
 
     .input-group input {
-        width: 90px;
-        font-size: 11px;
+        width: 100px;
+        font-size: 12px;
     }
 
     .status-badge .status-text {
@@ -1044,7 +1190,7 @@ body, html {
     }
 
     .status-badge {
-        padding: 6px;
+        padding: 8px;
     }
 
     /* Sidebar transforms into Overlay Drawer */
@@ -1053,40 +1199,34 @@ body, html {
         left: 0;
         top: 48px;
         bottom: 0;
-        z-index: 20;
-        width: 48px; /* Initially narrow rail-only width */
-        transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        z-index: 100; /* overlay on top of workspace */
+        width: 300px !important;
+        transform: translateX(-100%);
+        transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        border-right: 1px solid var(--border);
+        box-shadow: none;
     }
     
     .sidebar-container.open {
-        width: 300px; /* Expand to cover panel */
+        transform: translateX(0);
+        box-shadow: 4px 0 24px rgba(0, 0, 0, 0.6);
     }
-
+    
+    /* Ensure sidebar panel takes up its container width inside the drawer */
     .sidebar-panel {
-        display: none;
+        display: flex !important; /* Always display panel inside the drawer when open */
         background-color: var(--sidebar);
-        box-shadow: 4px 0 16px rgba(0, 0, 0, 0.5);
-    }
-    
-    .sidebar-container.open .sidebar-panel {
-        display: flex;
+        flex: 1;
     }
 
-    /* Force all grid splits to stack vertically */
-    .split-container.hsplit,
-    .split-container.vsplit {
-        flex-direction: column !important;
-    }
-    
-    .split-panel {
-        width: 100% !important;
-        height: 100% !important;
-        flex: 1 1 auto !important;
+    /* Hide desktop panel header when in mobile tab view */
+    .panel-header {
+        display: none !important;
     }
 
     /* Expand splitter drag height on mobile touch interfaces */
     .splitter {
-        height: 6px !important;
+        height: 8px !important;
         width: 100% !important;
         background-color: var(--border);
         cursor: row-resize !important;
@@ -1094,9 +1234,9 @@ body, html {
 
     /* Action buttons: enlarge touch target bounds */
     .action-btn {
-        width: 32px;
-        height: 32px;
-        font-size: 13px;
+        width: 36px;
+        height: 36px;
+        font-size: 14px;
     }
 
     /* Modals expand to fill the complete screen viewport */
@@ -1116,6 +1256,11 @@ body, html {
     .modal-footer {
         padding: 8px 12px;
     }
+    
+    /* Extra terminal breathing space on mobile */
+    .xterm {
+        padding: 8px 12px;
+    }
 }
 
 @media (max-width: 480px) {
@@ -1125,6 +1270,6 @@ body, html {
     }
     
     .sidebar-container.open {
-        width: 100vw; /* Take full width on very small screens */
+        width: 100vw !important; /* Take full width on very small screens */
     }
 }

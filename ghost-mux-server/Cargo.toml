@@ -9,6 +9,7 @@ serde_json = "1.0"
 portable-pty = "0.9"
 libghostty-vt = "0.1.1"
 libghostty-vt-sys = { version = "0.1.1", features = ["vendored"] }
+tungstenite = "0.21"
 
 [patch.crates-io]
 libghostty-vt-sys = { path = "../patches/libghostty-vt-sys" }

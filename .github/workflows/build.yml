@@ -6,6 +6,13 @@ on:
     tags: [ 'v*' ]
   pull_request:
     branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      build_mac:
+        description: 'Build macOS package'
+        type: boolean
+        required: false
+        default: false
 
 # Ensure concurrent runs on the same branch cancel previous runs to save CI resources
 concurrency:
@@ -16,17 +23,30 @@ permissions:
   contents: write
 
 jobs:
+  prepare:
+    name: Prepare Matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - id: set-matrix
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.build_mac }}" = "true" ]; then
+            MATRIX='{"include": [{"os": "ubuntu-latest", "artifact_name": "ghost-mux-linux-x86_64.tar.gz"}, {"os": "macos-latest", "artifact_name": "ghost-mux-macos-arm64.zip"}]}'
+          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            MATRIX='{"include": [{"os": "ubuntu-latest", "artifact_name": "ghost-mux-linux-x86_64.tar.gz"}, {"os": "macos-latest", "artifact_name": "ghost-mux-macos-arm64.zip"}]}'
+          else
+            MATRIX='{"include": [{"os": "ubuntu-latest", "artifact_name": "ghost-mux-linux-x86_64.tar.gz"}]}'
+          fi
+          echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
+
   build:
     name: Build & Test (${{ matrix.os }})
+    needs: prepare
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            artifact_name: ghost-mux-linux-x86_64.tar.gz
-          - os: macos-latest
-            artifact_name: ghost-mux-macos-arm64.zip
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
 
     steps:
       - name: Checkout repository
