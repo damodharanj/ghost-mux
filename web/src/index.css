@@ -1273,3 +1273,593 @@ body, html {
         width: 100vw !important; /* Take full width on very small screens */
     }
 }
+
+/* Tabbed Panels */
+.panel-tabs {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    height: 100%;
+    flex: 1;
+    overflow-x: auto;
+    scrollbar-width: none;
+}
+
+.panel-tabs::-webkit-scrollbar {
+    display: none;
+}
+
+.panel-tab-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 10px;
+    height: 28px;
+    background-color: var(--secondary);
+    border: 1px solid var(--border);
+    border-bottom: none;
+    border-top-left-radius: var(--radius-sm);
+    border-top-right-radius: var(--radius-sm);
+    color: var(--muted-foreground);
+    font-size: 11px;
+    cursor: pointer;
+    white-space: nowrap;
+    position: relative;
+    transition: all 0.15s ease;
+    user-select: none;
+}
+
+.panel-tab-btn:hover {
+    color: #ffffff;
+    background-color: var(--muted);
+}
+
+.panel-tab-btn.active {
+    color: #ffffff;
+    background-color: var(--tab-active);
+    border-color: var(--accent);
+    border-bottom: 1px solid var(--tab-active);
+    z-index: 2;
+}
+
+.tab-icon {
+    font-size: 11px;
+    opacity: 0.8;
+}
+
+.tab-close-btn {
+    font-size: 9px;
+    margin-left: 6px;
+    color: var(--muted-foreground);
+    border-radius: 50%;
+    width: 14px;
+    height: 14px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s ease;
+}
+
+.tab-close-btn:hover {
+    background-color: rgba(244, 112, 103, 0.2);
+    color: #f47067;
+}
+
+.panel-header-add-tab {
+    background: transparent;
+    border: none;
+    color: var(--muted-foreground);
+    font-size: 14px;
+    cursor: pointer;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s;
+    margin-left: 4px;
+}
+
+.panel-header-add-tab:hover {
+    background-color: var(--muted);
+    color: #ffffff;
+}
+
+/* Floating Dropdown for Add Tab */
+.add-tab-dropdown {
+    position: absolute;
+    background-color: var(--secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+    z-index: 1000;
+    min-width: 130px;
+    padding: 4px 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.dropdown-item {
+    padding: 6px 12px;
+    font-size: 11px;
+    color: var(--foreground);
+    cursor: pointer;
+    transition: background-color 0.15s;
+}
+
+.dropdown-item:hover {
+    background-color: var(--accent);
+    color: #ffffff;
+}
+
+/* Panel Highlight Active Border */
+.panel-view {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    transition: border-color 0.2s ease;
+}
+
+.panel-view.panel-active {
+    border-color: var(--accent) !important;
+    box-shadow: inset 0 0 4px rgba(0, 122, 204, 0.2);
+}
+
+/* Custom Code Editor Component inside tab */
+.editor-wrapper {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+    background-color: #1e1f22;
+}
+
+.editor-main {
+    flex: 1;
+    display: flex;
+    position: relative;
+    overflow: hidden;
+    background-color: #161719;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+}
+
+.editor-line-numbers {
+    width: 32px;
+    background-color: #161719;
+    color: var(--muted-foreground);
+    border-right: 1px solid var(--border);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    padding: 10px 0;
+    text-align: right;
+    padding-right: 8px;
+    overflow-y: hidden;
+    user-select: none;
+    line-height: 1.5;
+}
+
+.editor-textarea {
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--foreground);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    padding: 10px;
+    line-height: 1.5;
+    resize: none;
+    overflow-y: auto;
+    white-space: pre;
+}
+
+.editor-footer {
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 8px;
+    background-color: var(--secondary);
+    border-top: 1px solid var(--border);
+    font-size: 10px;
+    color: var(--muted-foreground);
+}
+
+.editor-file-path {
+    font-family: var(--font-mono);
+}
+
+/* Tab badge and modified styling */
+.tab-badges-container {
+    display: inline-flex;
+    gap: 4px;
+    align-items: center;
+    margin-left: 4px;
+}
+
+.tab-mod-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background-color: #d4c270;
+    display: none;
+    margin-left: 6px;
+}
+
+.panel-tab-btn.modified .tab-mod-dot {
+    display: inline-block;
+}
+
+/* Custom Git Panel inside Tab */
+.panel-git-wrapper {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+    background-color: var(--background);
+    padding: 8px;
+}
+
+.panel-git-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 8px;
+}
+
+.git-branch-title {
+    font-size: 12px;
+    color: var(--muted-foreground);
+}
+
+.panel-git-changes-view {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+/* Explorer tree inside Tab */
+.panel-explorer-wrapper {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+    background-color: var(--background);
+    padding: 8px;
+}
+
+.panel-explorer-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 8px;
+    font-size: 12px;
+    color: var(--muted-foreground);
+}
+
+/* Custom Web Browser Component inside tab */
+.browser-wrapper {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+    background-color: var(--background);
+}
+
+.browser-navbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px;
+    background-color: var(--secondary);
+    border-bottom: 1px solid var(--border);
+}
+
+.browser-url-input {
+    flex: 1;
+    background-color: var(--background);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: #ffffff;
+    padding: 4px 8px;
+    font-size: 11px;
+    outline: none;
+}
+
+.browser-url-input:focus {
+    border-color: var(--accent);
+}
+
+.browser-iframe {
+    flex: 1;
+    border: none;
+    background-color: #ffffff;
+}
+
+/* Diagnostics Component inside tab */
+.diagnostics-wrapper {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+    background-color: var(--background);
+    padding: 12px;
+}
+
+.diagnostics-header {
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 12px;
+    color: #ffffff;
+}
+
+.diagnostics-list {
+    flex: 1;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background-color: var(--secondary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.diagnostics-item-placeholder {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    color: var(--muted-foreground);
+    text-align: center;
+}
+
+.diag-icon {
+    font-size: 24px;
+    color: #57c994;
+}
+
+.diag-text {
+    font-size: 11px;
+}
+
+/* ========================================== */
+/* Workspace Vertical Tabs Rail (Desktop & Mobile) */
+/* ========================================== */
+
+.workspace-tabs-rail {
+    width: 56px;
+    height: 100%;
+    background-color: #131416; /* Extra dark premium layer */
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 12px 0;
+    gap: 12px;
+    flex-shrink: 0;
+    z-index: 11;
+}
+
+.workspace-tabs-list {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    flex: 1;
+}
+
+.workspace-tab-item {
+    position: relative;
+    width: 40px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+}
+
+.workspace-tab-avatar {
+    width: 40px;
+    height: 40px;
+    border-radius: var(--radius-sm);
+    background-color: var(--secondary);
+    border: 1px solid var(--border);
+    color: var(--muted-foreground);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 700;
+    font-family: var(--font-sans);
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    box-sizing: border-box;
+}
+
+/* Indicator strip on the left edge */
+.workspace-tab-item::before {
+    content: '';
+    position: absolute;
+    left: -8px;
+    top: 50%;
+    transform: translateY(-50%) scaleY(0.2);
+    width: 4px;
+    height: 24px;
+    background-color: var(--accent);
+    border-radius: 0 4px 4px 0;
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    opacity: 0;
+}
+
+.workspace-tab-item.active::before {
+    transform: translateY(-50%) scaleY(1);
+    opacity: 1;
+    left: -8px;
+}
+
+/* On desktop, indicator shifts slightly on hover/active */
+@media (min-width: 769px) {
+    .workspace-tab-item.active::before {
+        left: -8px;
+    }
+    .workspace-tab-item:hover:not(.active)::before {
+        transform: translateY(-50%) scaleY(0.6);
+        opacity: 0.5;
+        left: -8px;
+    }
+}
+
+.workspace-tab-item.active .workspace-tab-avatar {
+    background-color: var(--accent);
+    color: var(--accent-foreground);
+    border-color: var(--accent);
+    box-shadow: 0 0 8px var(--accent-glow);
+    border-radius: 12px;
+}
+
+.workspace-tab-item:hover .workspace-tab-avatar {
+    border-radius: 12px;
+    color: #ffffff;
+    border-color: var(--muted-foreground);
+}
+
+.workspace-tab-item.active:hover .workspace-tab-avatar {
+    background-color: var(--accent-hover);
+    border-color: var(--accent-hover);
+}
+
+/* Hover Tooltip */
+.workspace-tab-tooltip {
+    position: absolute;
+    left: 64px;
+    background-color: #0b0c0d;
+    color: #ffffff;
+    padding: 6px 10px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 500;
+    white-space: nowrap;
+    pointer-events: none;
+    opacity: 0;
+    transform: translateX(-10px);
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+    border: 1px solid var(--border);
+    z-index: 100;
+}
+
+.workspace-tab-item:hover .workspace-tab-tooltip {
+    opacity: 1;
+    transform: translateX(0);
+}
+
+/* Close/Remove Button on Hover */
+.workspace-tab-close-btn {
+    position: absolute;
+    top: -4px;
+    right: -4px;
+    width: 15px;
+    height: 15px;
+    border-radius: 50%;
+    background-color: #f47067;
+    color: #ffffff;
+    border: none;
+    font-size: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    opacity: 0;
+    transform: scale(0.5);
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    z-index: 2;
+    line-height: 1;
+}
+
+.workspace-tab-item:hover .workspace-tab-close-btn {
+    opacity: 1;
+    transform: scale(1);
+}
+
+.workspace-tab-close-btn:hover {
+    background-color: #ff857d;
+    transform: scale(1.1);
+}
+
+/* Add Workspace Button */
+.workspace-tab-add-btn {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background-color: transparent;
+    border: 1px dashed var(--border);
+    color: var(--muted-foreground);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    margin-top: auto;
+}
+
+.workspace-tab-add-btn:hover {
+    background-color: var(--secondary);
+    color: var(--accent);
+    border-color: var(--accent);
+    border-style: solid;
+    transform: scale(1.05);
+}
+
+/* Responsive adjustment for Mobile Viewports */
+@media (max-width: 768px) {
+    .workspace-tabs-rail {
+        position: absolute;
+        left: 0;
+        top: 48px;
+        bottom: 0;
+        width: 56px;
+        z-index: 101;
+        transform: translateX(-100%);
+        transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        border-right: 1px solid var(--border);
+    }
+    
+    .workspace-tabs-rail.open {
+        transform: translateX(0);
+    }
+
+    .workspace-tab-item.active::before {
+        left: 0;
+    }
+
+    /* Shift sidebar layout to place next to workspace tabs rail when open */
+    .sidebar-container {
+        position: absolute;
+        left: 0;
+        top: 48px;
+        bottom: 0;
+        z-index: 100;
+        width: 300px !important;
+        transform: translateX(-100%);
+        transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        border-right: 1px solid var(--border);
+    }
+    
+    .sidebar-container.open {
+        transform: translateX(56px);
+        width: calc(100vw - 56px) !important;
+        max-width: 244px !important;
+    }
+    
+    /* Overlay backdrop should cover screen */
+    .sidebar-backdrop {
+        z-index: 99 !important;
+    }
+}

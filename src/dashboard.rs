@@ -25,11 +25,14 @@ use crate::remote_api::{
 };
 
 actions!(editor, [SaveFile]);
+actions!(dashboard, [ToggleFileSearch]);
 
 pub fn register_bindings(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("ctrl-s", SaveFile, Some("Input")),
         KeyBinding::new("cmd-s", SaveFile, Some("Input")),
+        KeyBinding::new("cmd-p", ToggleFileSearch, None),
+        KeyBinding::new("ctrl-p", ToggleFileSearch, None),
     ]);
 }
 
@@ -216,6 +219,17 @@ pub struct RemoteUrlModal {
     pub window_handle: AnyWindowHandle,
 }
 
+#[derive(Clone)]
+pub struct FileSearchPalette {
+    pub input_state: Entity<InputState>,
+    pub window_handle: AnyWindowHandle,
+    pub query: String,
+    pub all_files: Vec<PathBuf>,
+    pub filtered_files: Vec<PathBuf>,
+    pub selected_idx: usize,
+    pub is_loading: bool,
+}
+
 #[allow(dead_code)]
 #[derive(Clone)]
 pub struct ExplorerDragItem {
@@ -295,6 +309,7 @@ pub struct DashboardView {
     pub next_id: usize,
     pub modal_editor: Option<ModalEditorState>,
     pub remote_url_modal: Option<RemoteUrlModal>,
+    pub file_search_palette: Option<FileSearchPalette>,
     pub editor_panels: std::collections::HashSet<usize>,
     pub open_menu: Option<TabMenuState>,
     pub panel_focus_handles: HashMap<usize, FocusHandle>,
@@ -378,6 +393,7 @@ impl DashboardView {
             next_id: 0,
             modal_editor: None,
             remote_url_modal: None,
+            file_search_palette: None,
             editor_panels: std::collections::HashSet::new(),
             panel_focus_handles: HashMap::new(),
             open_menu: None,
@@ -821,6 +837,223 @@ impl DashboardView {
         self.ensure_dashboard_lsps(new_id, window, cx);
         self.persist(cx);
         cx.notify();
+    }
+
+    pub fn toggle_file_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.file_search_palette.is_some() {
+            self.file_search_palette = None;
+            cx.notify();
+            return;
+        }
+
+        let window_handle = window.window_handle();
+        let input_state = cx.new(|cx| {
+            let e = InputState::new(window, cx)
+                .multi_line(false)
+                .placeholder("Search files by name...");
+            e.focus(window, cx);
+            e
+        });
+
+        cx.subscribe(&input_state, move |this, input_state, event, cx| {
+            match event {
+                gpui_component::input::InputEvent::Change => {
+                    let val = input_state.read(cx).value().to_string();
+                    this.handle_file_search_input_change(val, cx);
+                }
+                gpui_component::input::InputEvent::PressEnter { .. } => {
+                    this.confirm_file_search(None, cx);
+                }
+                _ => {}
+            }
+        }).detach();
+
+        self.file_search_palette = Some(FileSearchPalette {
+            input_state,
+            window_handle,
+            query: String::new(),
+            all_files: Vec::new(),
+            filtered_files: Vec::new(),
+            selected_idx: 0,
+            is_loading: true,
+        });
+
+        let active_id = self.active_dashboard_id;
+        if let Some(dashboard) = self.dashboards.get(&active_id) {
+            let entity = cx.weak_entity();
+            let server_url = dashboard.server_url.clone();
+            let current_dir = dashboard.current_dir.clone();
+
+            cx.spawn(async move |_, cx| {
+                let files = cx.background_executor().spawn(async move {
+                    let mut all_files = Vec::new();
+                    let mut dirs_to_visit = vec![current_dir];
+                    let mut file_count = 0;
+                    
+                    while let Some(dir) = dirs_to_visit.pop() {
+                        if file_count >= 2000 {
+                            break;
+                        }
+                        if let Ok(entries) = read_directory(&dir, &server_url) {
+                            for entry in entries {
+                                if entry.name == ".git" || entry.name == ".DS_Store" || entry.name == "node_modules" || entry.name == "target" || entry.name == ".tools" {
+                                    continue;
+                                }
+                                if entry.is_dir {
+                                    dirs_to_visit.push(entry.path);
+                                } else {
+                                    all_files.push(entry.path);
+                                    file_count += 1;
+                                }
+                            }
+                        }
+                    }
+                    all_files
+                }).await;
+
+                let _ = cx.update(|cx| {
+                    let _ = cx.update_window(window_handle, |_, _window, cx| {
+                        let _ = entity.update(cx, |this, cx| {
+                            if let Some(ref mut palette) = this.file_search_palette {
+                                palette.all_files = files;
+                                palette.is_loading = false;
+                                this.update_file_search_results(cx);
+                            }
+                        });
+                    });
+                });
+            }).detach();
+        }
+
+        cx.notify();
+    }
+
+    pub fn handle_file_search_input_change(&mut self, val: String, cx: &mut Context<Self>) {
+        if let Some(ref mut palette) = self.file_search_palette {
+            palette.query = val;
+            self.update_file_search_results(cx);
+        }
+    }
+
+    pub fn update_file_search_results(&mut self, cx: &mut Context<Self>) {
+        let Some(ref mut palette) = self.file_search_palette else { return; };
+        
+        let query = palette.query.trim().to_lowercase();
+        if query.is_empty() {
+            let mut files = palette.all_files.clone();
+            files.sort();
+            palette.filtered_files = files;
+            palette.selected_idx = 0;
+            cx.notify();
+            return;
+        }
+
+        let db = match self.dashboards.get(&self.active_dashboard_id) {
+            Some(db) => db,
+            None => {
+                palette.filtered_files = Vec::new();
+                palette.selected_idx = 0;
+                cx.notify();
+                return;
+            }
+        };
+
+        let current_dir = &db.current_dir;
+        
+        let mut scored_files = Vec::new();
+        for file in &palette.all_files {
+            let rel_path = file.strip_prefix(current_dir).unwrap_or(file);
+            let rel_path_str = rel_path.to_string_lossy().to_string();
+            let rel_path_lower = rel_path_str.to_lowercase();
+            
+            let file_name_str = file.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let file_name_lower = file_name_str.to_lowercase();
+
+            if let Some(pos) = rel_path_lower.find(&query) {
+                let is_in_filename = file_name_lower.contains(&query);
+                let score = if is_in_filename {
+                    if file_name_lower.starts_with(&query) {
+                        100 - file_name_lower.len()
+                    } else {
+                        80 - file_name_lower.len()
+                    }
+                } else {
+                    50 - pos
+                };
+                scored_files.push((score, file.clone()));
+            }
+        }
+
+        scored_files.sort_by(|a, b| b.0.cmp(&a.0));
+        
+        palette.filtered_files = scored_files.into_iter().map(|(_, f)| f).collect();
+        palette.selected_idx = 0;
+        cx.notify();
+    }
+
+    pub fn move_file_search_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if let Some(ref mut palette) = self.file_search_palette {
+            let len = palette.filtered_files.len();
+            if len == 0 {
+                return;
+            }
+            let mut idx = palette.selected_idx as isize + delta;
+            if idx < 0 {
+                idx = len as isize - 1;
+            } else if idx >= len as isize {
+                idx = 0;
+            }
+            palette.selected_idx = idx as usize;
+            cx.notify();
+        }
+    }
+
+    pub fn confirm_file_search(&mut self, window: Option<&mut Window>, cx: &mut Context<Self>) {
+        if let Some(palette) = self.file_search_palette.take() {
+            let window_handle = palette.window_handle;
+            if !palette.filtered_files.is_empty() {
+                let selected_file = palette.filtered_files[palette.selected_idx].clone();
+                if let Some(win) = window {
+                    self.open_file_from_palette(selected_file, win, cx);
+                } else {
+                    let entity = cx.weak_entity();
+                    cx.spawn(async move |_, cx| {
+                        let _ = cx.update(|cx| {
+                            let _ = cx.update_window(window_handle, |_, window, cx| {
+                                let _ = entity.update(cx, |this, cx| {
+                                    this.open_file_from_palette(selected_file, window, cx);
+                                });
+                            });
+                        });
+                    }).detach();
+                }
+            } else {
+                cx.notify();
+            }
+        }
+    }
+
+    pub fn open_file_from_palette(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let active_panel = self.find_active_panel_id(window, cx);
+        if let Some(panel_id) = active_panel {
+            self.open_file_in_panel(panel_id, path, false, None, window, cx);
+        } else {
+            self.open_explorer_file(self.active_dashboard_id, 0, 0, path, window, cx);
+        }
+    }
+
+    pub fn find_active_panel_id(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<usize> {
+        let db = self.dashboards.get(&self.active_dashboard_id)?;
+        
+        for (&panel_id, focus_handle) in &self.panel_focus_handles {
+            if db.panel_tabs.contains_key(&panel_id) {
+                if focus_handle.contains_focused(window, cx) {
+                    return Some(panel_id);
+                }
+            }
+        }
+
+        db.panel_tabs.keys().cloned().next()
     }
 
     #[allow(dead_code)]
@@ -3345,7 +3578,13 @@ impl Render for DashboardView {
                 .child(main)
         };
 
-        let mut root = div().relative().size_full().child(main_view);
+        let mut root = div()
+            .relative()
+            .size_full()
+            .on_action(cx.listener(|this, _: &ToggleFileSearch, window, cx| {
+                this.toggle_file_search(window, cx);
+            }))
+            .child(main_view);
 
         if let Some(ref modal) = self.modal_editor {
             root = root.child(render_modal_editor(&modal.path, &modal.editor, modal.is_diff, self, cx));
@@ -3679,6 +3918,10 @@ impl Render for DashboardView {
             root = root.child(catcher).child(menu_div);
         }
 
+        if let Some(ref palette) = self.file_search_palette {
+            root = root.child(render_file_search_palette(palette, self, cx));
+        }
+
         root.into_any()
     }
 }
@@ -3860,6 +4103,215 @@ fn render_remote_url_modal(
                                 .items_center()
                                 .justify_center()
                                 .child("Connect")
+                        )
+                )
+        )
+        .into_any_element()
+}
+
+fn render_file_search_palette(
+    palette: &FileSearchPalette,
+    view: &DashboardView,
+    cx: &mut Context<DashboardView>,
+) -> AnyElement {
+    let theme = cx.theme();
+    let db = view.dashboards.get(&view.active_dashboard_id);
+    let current_dir = db.map(|d| d.current_dir.clone()).unwrap_or_default();
+
+    // Dark transparent backdrop
+    div()
+        .id(ElementId::Integer(999_500))
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .bg(gpui::rgba(0x00000077))
+        .flex()
+        .items_start()
+        .justify_center()
+        .pt(px(80.))
+        .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+            this.file_search_palette = None;
+            cx.notify();
+        }))
+        .on_scroll_wheel(|_, _, cx| {
+            cx.stop_propagation();
+        })
+        .child(
+            // Modal container
+            div()
+                .id(ElementId::Integer(999_510))
+                .w(px(500.))
+                .flex()
+                .flex_col()
+                .rounded(theme.radius)
+                .bg(theme.background)
+                .border_1()
+                .border_color(theme.border)
+                .shadow_lg()
+                .on_click(|_, _, cx| {
+                    cx.stop_propagation();
+                })
+                .on_mouse_down(MouseButton::Left, {
+                    let input_state = palette.input_state.clone();
+                    move |_, window, cx| {
+                        cx.stop_propagation();
+                        input_state.update(cx, |e, cx| {
+                            e.focus(window, cx);
+                        });
+                    }
+                })
+                .on_action(cx.listener(|this, _: &gpui_component::input::MoveUp, _window, cx| {
+                    this.move_file_search_selection(-1, cx);
+                }))
+                .on_action(cx.listener(|this, _: &gpui_component::input::MoveDown, _window, cx| {
+                    this.move_file_search_selection(1, cx);
+                }))
+                .on_action(cx.listener(|this, _: &gpui_component::input::Escape, _window, cx| {
+                    this.file_search_palette = None;
+                    cx.notify();
+                }))
+                .child(
+                    // Input header
+                    div()
+                        .w_full()
+                        .h(px(36.))
+                        .px_3()
+                        .border_b_1()
+                        .border_color(theme.border)
+                        .bg(theme.secondary)
+                        .rounded_t(theme.radius)
+                        .flex()
+                        .items_center()
+                        .child(
+                            Icon::new(IconName::Search)
+                                .size_4()
+                                .text_color(theme.muted_foreground)
+                                .mr_2()
+                        )
+                        .child(
+                            Input::new(&palette.input_state)
+                                .h_full()
+                                .font_family(theme.mono_font_family.clone())
+                                .text_size(theme.mono_font_size)
+                                .font_normal()
+                        )
+                )
+                .child({
+                    let list = div()
+                        .w_full()
+                        .flex()
+                        .flex_col()
+                        .bg(theme.background);
+
+                    if palette.is_loading {
+                        list.child(
+                            div()
+                                .p_4()
+                                .flex()
+                                .justify_center()
+                                .items_center()
+                                .text_sm()
+                                .text_color(theme.muted_foreground)
+                                .child("Scanning workspace files...")
+                        )
+                    } else if palette.filtered_files.is_empty() {
+                        list.child(
+                            div()
+                                .p_4()
+                                .flex()
+                                .justify_center()
+                                .items_center()
+                                .text_sm()
+                                .text_color(theme.muted_foreground)
+                                .child("No matching files found")
+                        )
+                    } else {
+                        let mut list = list;
+                        let total_matches = palette.filtered_files.len();
+                        let display_count = std::cmp::min(total_matches, 12);
+                        
+                        for i in 0..display_count {
+                            let file = &palette.filtered_files[i];
+                            let rel_path = file.strip_prefix(&current_dir).unwrap_or(file);
+                            let file_name = file.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                            let dir_path = rel_path.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+                            
+                            let is_selected = i == palette.selected_idx;
+                            
+                            let mut item = div()
+                                .id(ElementId::Integer(999_600 + i as u64))
+                                .w_full()
+                                .px_3()
+                                .py_2()
+                                .flex()
+                                .flex_col()
+                                .cursor_pointer()
+                                .on_click(cx.listener({
+                                    let file = file.clone();
+                                    move |this, _: &ClickEvent, window, cx| {
+                                        this.file_search_palette = None;
+                                        this.open_file_from_palette(file.clone(), window, cx);
+                                    }
+                                }));
+                                
+                            if is_selected {
+                                item = item.bg(theme.accent).text_color(theme.accent_foreground);
+                            } else {
+                                item = item.hover(|s| s.bg(theme.muted)).text_color(theme.foreground);
+                            }
+                            
+                            let path_color = if is_selected {
+                                theme.accent_foreground
+                            } else {
+                                theme.muted_foreground
+                            };
+
+                            let file_name_el = div()
+                                .text_sm()
+                                .font_semibold()
+                                .child(file_name);
+
+                            let path_el = div()
+                                .text_xs()
+                                .text_color(path_color)
+                                .child(dir_path);
+
+                            list = list.child(item.child(file_name_el).child(path_el));
+                        }
+                        
+                        if total_matches > display_count {
+                            list = list.child(
+                                div()
+                                    .px_3()
+                                    .py_1p5()
+                                    .border_t_1()
+                                    .border_color(theme.border)
+                                    .bg(theme.secondary)
+                                    .text_xs()
+                                    .text_color(theme.muted_foreground)
+                                    .child(format!("Showing {} of {} matches", display_count, total_matches))
+                            );
+                        }
+                        list
+                    }
+                })
+                .child(
+                    div()
+                        .h(px(24.))
+                        .px_3()
+                        .bg(theme.secondary)
+                        .border_t_1()
+                        .border_color(theme.border)
+                        .rounded_b(theme.radius)
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .text_size(px(10.))
+                                .text_color(theme.muted_foreground)
+                                .child("↑↓ to navigate • Enter to open • Esc to close")
                         )
                 )
         )

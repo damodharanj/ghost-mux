@@ -56,6 +56,7 @@ struct PtySession {
     rows: usize,
     running_agent: Option<String>,
     last_event: Option<String>,
+    cwd: String,
 }
 
 // Represents a language server workspace session
@@ -218,6 +219,59 @@ impl LspSession {
     }
 }
 
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct Workspace {
+    name: String,
+    path: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct WorkspacesConfig {
+    workspaces: Vec<Workspace>,
+    active_path: String,
+}
+
+impl WorkspacesConfig {
+    fn load() -> Self {
+        let path = Path::new("workspaces.yaml");
+        if path.exists() {
+            if let Ok(content) = fs::read_to_string(path) {
+                if let Ok(config) = serde_yaml::from_str::<WorkspacesConfig>(&content) {
+                    return config;
+                }
+            }
+        }
+        // Fallback to default
+        let current_dir = std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .to_string_lossy()
+            .to_string();
+        let default_workspace = Workspace {
+            name: Path::new(&current_dir)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "Workspace Root".to_string()),
+            path: current_dir.clone(),
+        };
+        let config = WorkspacesConfig {
+            workspaces: vec![default_workspace],
+            active_path: current_dir,
+        };
+        let _ = config.save();
+        config
+    }
+
+    fn save(&self) -> Result<(), String> {
+        let path = Path::new("workspaces.yaml");
+        let content = serde_yaml::to_string(self).map_err(|e| e.to_string())?;
+        fs::write(path, content).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+}
+
 // Global server context holding active states
 struct ServerState {
     ptys: Mutex<HashMap<String, PtySession>>,
@@ -225,6 +279,7 @@ struct ServerState {
     next_pty_id: std::sync::atomic::AtomicUsize,
     next_lsp_id: std::sync::atomic::AtomicUsize,
     port: u16,
+    workspaces: Mutex<WorkspacesConfig>,
 }
 
 impl ServerState {
@@ -235,11 +290,90 @@ impl ServerState {
             next_pty_id: std::sync::atomic::AtomicUsize::new(1),
             next_lsp_id: std::sync::atomic::AtomicUsize::new(1),
             port,
+            workspaces: Mutex::new(WorkspacesConfig::load()),
         }
     }
 
     fn execute_method(&self, method: &str, params: Value) -> Result<Value, String> {
         match method {
+            // --- Workspace Methods ---
+            "workspaces.list" => {
+                let config = self.workspaces.lock().unwrap();
+                Ok(serde_json::to_value(&*config).map_err(|e| e.to_string())?)
+            }
+            "workspaces.add" => {
+                let path_str = params.get("path").and_then(|p| p.as_str()).ok_or("Missing path")?;
+                let p = Path::new(path_str);
+                let canonical_path = if p.is_relative() {
+                    std::env::current_dir().map_err(|e| e.to_string())?.join(p)
+                } else {
+                    p.to_path_buf()
+                };
+                // Try canonicalizing if it exists
+                let canonical_path = canonical_path.canonicalize().unwrap_or(canonical_path);
+                let path_string = canonical_path.to_string_lossy().to_string();
+                let name = canonical_path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "Root Workspace".to_string());
+                
+                let mut config = self.workspaces.lock().unwrap();
+                if !config.workspaces.iter().any(|w| w.path == path_string) {
+                    config.workspaces.push(Workspace {
+                        name: name.clone(),
+                        path: path_string.clone(),
+                    });
+                }
+                config.active_path = path_string.clone();
+                config.save()?;
+                
+                Ok(serde_json::json!({
+                    "success": true,
+                    "workspace": {
+                        "name": name,
+                        "path": path_string
+                    }
+                }))
+            }
+            "workspaces.remove" => {
+                let path_str = params.get("path").and_then(|p| p.as_str()).ok_or("Missing path")?;
+                let mut config = self.workspaces.lock().unwrap();
+                config.workspaces.retain(|w| w.path != path_str);
+                if config.active_path == path_str {
+                    if let Some(first) = config.workspaces.first() {
+                        config.active_path = first.path.clone();
+                    } else {
+                        // Reset to default CWD workspace
+                        let current_dir = std::env::current_dir()
+                            .unwrap_or_else(|_| PathBuf::from("."))
+                            .to_string_lossy()
+                            .to_string();
+                        let default_workspace = Workspace {
+                            name: Path::new(&current_dir)
+                                .file_name()
+                                .map(|n| n.to_string_lossy().to_string())
+                                .unwrap_or_else(|| "Workspace Root".to_string()),
+                            path: current_dir.clone(),
+                        };
+                        config.workspaces.push(default_workspace);
+                        config.active_path = current_dir;
+                    }
+                }
+                config.save()?;
+                Ok(serde_json::json!({ "success": true }))
+            }
+            "workspaces.set_active" => {
+                let path_str = params.get("path").and_then(|p| p.as_str()).ok_or("Missing path")?;
+                let mut config = self.workspaces.lock().unwrap();
+                if config.workspaces.iter().any(|w| w.path == path_str) {
+                    config.active_path = path_str.to_string();
+                    config.save()?;
+                    Ok(serde_json::json!({ "success": true }))
+                } else {
+                    Err("Workspace not found in list".to_string())
+                }
+            }
+
             // --- File System Methods ---
             "fs.list_dir" => {
                 let path_str = params.get("path").and_then(|p| p.as_str()).ok_or("Missing path")?;
@@ -406,6 +540,7 @@ impl ServerState {
                     }
                 });
 
+                let cwd_val = cwd_str.unwrap_or(".").to_string();
                 let session = PtySession {
                     writer,
                     pty_master,
@@ -415,6 +550,7 @@ impl ServerState {
                     rows,
                     running_agent: None,
                     last_event: None,
+                    cwd: cwd_val,
                 };
 
                 self.ptys.lock().unwrap().insert(id.clone(), session);
@@ -525,7 +661,8 @@ impl ServerState {
                         "cols": pty.cols,
                         "rows": pty.rows,
                         "running_agent": pty.running_agent,
-                        "last_event": pty.last_event
+                        "last_event": pty.last_event,
+                        "cwd": pty.cwd
                     })
                 }).collect();
                 Ok(serde_json::json!({ "sessions": list }))
@@ -760,9 +897,9 @@ fn handle_hook(path: &str, req_body: &str, server_state: &ServerState) -> Result
     }
 }
 
-const INDEX_HTML: &[u8] = include_bytes!("../../web/index.html");
-const APP_JS: &[u8] = include_bytes!("../../web/app.js");
-const STYLE_CSS: &[u8] = include_bytes!("../../web/style.css");
+const INDEX_HTML: &[u8] = include_bytes!("../../web/dist/index.html");
+const APP_JS: &[u8] = include_bytes!("../../web/dist/app.js");
+const STYLE_CSS: &[u8] = include_bytes!("../../web/dist/style.css");
 
 // HTTP Connection handling
 fn handle_connection(mut stream: TcpStream, server_state: Arc<ServerState>) {
@@ -1302,5 +1439,55 @@ mod tests {
         assert_eq!(git_res.get("status").unwrap().as_str().unwrap(), "success");
         let branch = git_res.get("result").unwrap().get("branch").unwrap().as_str().unwrap();
         assert!(!branch.is_empty());
+    }
+
+    #[test]
+    fn test_workspace_operations() {
+        let port = spawn_test_server();
+        // Remove spaces file if exists to start fresh
+        let _ = fs::remove_file("workspaces.yaml");
+
+        // 1. Get initial workspaces list
+        let list_res = post_rpc(port, "workspaces.list", serde_json::json!({}));
+        assert_eq!(list_res.get("status").unwrap().as_str().unwrap(), "success");
+        let result = list_res.get("result").unwrap();
+        let workspaces = result.get("workspaces").unwrap().as_array().unwrap();
+        assert!(!workspaces.is_empty());
+        let active_path = result.get("active_path").unwrap().as_str().unwrap();
+        assert!(!active_path.is_empty());
+
+        // 2. Add a new workspace
+        let temp_workspace_path = std::env::temp_dir().join(format!("ghost_mux_ws_{}", port));
+        let _ = fs::remove_dir_all(&temp_workspace_path);
+        fs::create_dir_all(&temp_workspace_path).unwrap();
+        let ws_path_str = temp_workspace_path.canonicalize().unwrap().to_string_lossy().to_string();
+
+        let add_res = post_rpc(port, "workspaces.add", serde_json::json!({
+            "path": ws_path_str.clone()
+        }));
+        assert_eq!(add_res.get("status").unwrap().as_str().unwrap(), "success");
+        
+        // 3. Verify it is active and in list
+        let list_res_2 = post_rpc(port, "workspaces.list", serde_json::json!({}));
+        let result_2 = list_res_2.get("result").unwrap();
+        let workspaces_2 = result_2.get("workspaces").unwrap().as_array().unwrap();
+        assert!(workspaces_2.iter().any(|w| w.get("path").unwrap().as_str().unwrap() == ws_path_str));
+        let active_path_2 = result_2.get("active_path").unwrap().as_str().unwrap();
+        assert_eq!(active_path_2, ws_path_str);
+
+        // 4. Remove workspace
+        let remove_res = post_rpc(port, "workspaces.remove", serde_json::json!({
+            "path": ws_path_str.clone()
+        }));
+        assert_eq!(remove_res.get("status").unwrap().as_str().unwrap(), "success");
+
+        // 5. Verify it is no longer in list and active switched
+        let list_res_3 = post_rpc(port, "workspaces.list", serde_json::json!({}));
+        let result_3 = list_res_3.get("result").unwrap();
+        let workspaces_3 = result_3.get("workspaces").unwrap().as_array().unwrap();
+        assert!(!workspaces_3.iter().any(|w| w.get("path").unwrap().as_str().unwrap() == ws_path_str));
+
+        let _ = fs::remove_dir_all(&temp_workspace_path);
+        let _ = fs::remove_file("workspaces.yaml");
     }
 }

@@ -10,6 +10,7 @@
 # Production build outputs
 /dist/
 **/dist/
+!/web/dist/
 
 # Patched dependencies (only patch files are tracked)
 /patches/gpui-component/
@@ -22,6 +23,8 @@
 
 # Auto-generated app state
 /dashboard_state.yaml
+/ghost-mux-server/workspaces.yaml
+
 
 # Zig build cache & outputs
 .zig-cache/
