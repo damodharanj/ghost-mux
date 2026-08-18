@@ -67,8 +67,8 @@ jobs:
         run: |
           chmod +x tools/linux/ensure-zig.sh
           ./tools/linux/ensure-zig.sh
-          # Add local Zig binary to GitHub Actions PATH
           echo "$(pwd)/.tools/zig/toolchain" >> $GITHUB_PATH
+          echo "ZIG=$(pwd)/.tools/zig/toolchain/zig" >> $GITHUB_ENV
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
@@ -82,15 +82,13 @@ jobs:
           echo "DEVELOPER_DIR=$(xcode-select -p)" >> $GITHUB_ENV
           echo "MACOSX_DEPLOYMENT_TARGET=11.0" >> $GITHUB_ENV
 
-      - name: Cache Cargo registry and target
+      - name: Cache Cargo dependencies
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/bin/
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-            target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
@@ -107,8 +105,8 @@ jobs:
 
       - name: Cargo test
         run: |
-          cargo test
-          cargo test --manifest-path ghost-mux-server/Cargo.toml --target-dir target
+          cargo test -- --test-threads=1
+          cargo test --manifest-path ghost-mux-server/Cargo.toml --target-dir target -- --test-threads=1
 
       - name: Build production bundle
         run: |

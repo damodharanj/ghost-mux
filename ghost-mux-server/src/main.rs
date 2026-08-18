@@ -1382,25 +1382,32 @@ mod tests {
         }));
         assert_eq!(write_res.get("status").unwrap().as_str().unwrap(), "success");
 
-        // Allow shell process to execute command and populate screen buffer
-        thread::sleep(Duration::from_millis(500));
-
-        // 3. Get screen content and verify output
-        let screen_res = post_rpc(port, "pty.get_screen", serde_json::json!({
-            "pty_id": pty_id
-        }));
-        assert_eq!(screen_res.get("status").unwrap().as_str().unwrap(), "success");
-        let rows = screen_res.get("result").unwrap().get("rows").unwrap().as_array().unwrap();
-        
+        // 3. Poll screen content until command output appears or timeout
         let mut found = false;
-        for row in rows {
-            let row_str = row.as_str().unwrap();
-            if row_str.contains("headless") {
-                found = true;
-                break;
+        let mut last_rows = Vec::new();
+        for _ in 0..30 {
+            let screen_res = post_rpc(port, "pty.get_screen", serde_json::json!({
+                "pty_id": pty_id
+            }));
+            if screen_res.get("status").and_then(|s| s.as_str()) == Some("success") {
+                if let Some(rows) = screen_res.get("result").and_then(|r| r.get("rows")).and_then(|r| r.as_array()) {
+                    last_rows = rows.clone();
+                    for row in rows {
+                        if let Some(row_str) = row.as_str() {
+                            if row_str.contains("headless") {
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+                    if found {
+                        break;
+                    }
+                }
             }
+            thread::sleep(Duration::from_millis(100));
         }
-        assert!(found, "PTY screen did not contain word 'headless'. Entire screen: {:?}", rows);
+        assert!(found, "PTY screen did not contain word 'headless'. Entire screen: {:?}", last_rows);
 
         // 4. Test agent hook triggering
         let hook_request = format!(
