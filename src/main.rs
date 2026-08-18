@@ -1,3 +1,5 @@
+#![recursion_limit = "512"]
+
 mod browser;
 mod dashboard;
 mod hook_server;
@@ -149,4 +151,5 @@ fn main() {
         .detach();
     });
 }
+
 

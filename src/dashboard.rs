@@ -214,6 +214,42 @@ pub struct TabMenuState {
     pub position: gpui::Point<gpui::Pixels>,
 }
 
+#[derive(Clone, Debug)]
+pub struct SkillInfo {
+    pub name: String,
+    pub path: PathBuf,
+    pub description: Option<String>,
+    pub source_dir: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct SkillsMenuState {
+    pub dashboard_id: usize,
+    pub position: gpui::Point<gpui::Pixels>,
+    pub skills: Vec<SkillInfo>,
+}
+
+#[derive(Clone, Debug)]
+pub struct AgentSession {
+    pub id: String,
+    pub title: String,
+    pub agent: String,
+    pub workspace: Option<String>,
+    pub timestamp_ms: Option<u64>,
+    pub relative_time: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct AgentSessionsMenuState {
+    pub dashboard_id: usize,
+    pub panel_id: Option<usize>,
+    pub tab_id: Option<usize>,
+    pub agent_name: Option<String>,
+    pub position: gpui::Point<gpui::Pixels>,
+    pub sessions: Vec<AgentSession>,
+}
+
+
 pub struct RemoteUrlModal {
     pub input_state: Entity<InputState>,
     pub window_handle: AnyWindowHandle,
@@ -312,6 +348,8 @@ pub struct DashboardView {
     pub file_search_palette: Option<FileSearchPalette>,
     pub editor_panels: std::collections::HashSet<usize>,
     pub open_menu: Option<TabMenuState>,
+    pub skills_menu: Option<SkillsMenuState>,
+    pub agent_sessions_menu: Option<AgentSessionsMenuState>,
     pub panel_focus_handles: HashMap<usize, FocusHandle>,
     pub hook_port: Option<u16>,
     pub hook_receiver: Option<std::sync::mpsc::Receiver<crate::hook_server::HookEvent>>,
@@ -397,6 +435,8 @@ impl DashboardView {
             editor_panels: std::collections::HashSet::new(),
             panel_focus_handles: HashMap::new(),
             open_menu: None,
+            skills_menu: None,
+            agent_sessions_menu: None,
             hook_port: None,
             hook_receiver: None,
             explorer_edit: None,
@@ -1056,6 +1096,37 @@ impl DashboardView {
         db.panel_tabs.keys().cloned().next()
     }
 
+    pub fn open_agents_md(&mut self, dashboard_id: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let current_dir = self.dashboards.get(&dashboard_id)
+            .map(|d| d.current_dir.clone())
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        
+        let agents_path = current_dir.join("AGENTS.md");
+        if !agents_path.exists() {
+            let default_content = "# AGENTS.md\n\n## Overview\nProject instructions and guidance for AI agents.\n";
+            let _ = std::fs::write(&agents_path, default_content);
+        }
+        self.open_file_from_palette(agents_path, window, cx);
+        cx.notify();
+    }
+
+    pub fn create_new_skill(&mut self, dashboard_id: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let current_dir = self.dashboards.get(&dashboard_id)
+            .map(|d| d.current_dir.clone())
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        
+        let skill_dir = current_dir.join("skills").join("new-skill");
+        let _ = std::fs::create_dir_all(&skill_dir);
+        let skill_file = skill_dir.join("SKILL.md");
+        if !skill_file.exists() {
+            let template = "---\nname: new-skill\ndescription: Custom agent skill\n---\n\n# New Skill\n\nInstructions and tools for this skill.\n";
+            let _ = std::fs::write(&skill_file, template);
+        }
+        self.open_file_from_palette(skill_file, window, cx);
+        self.skills_menu = None;
+        cx.notify();
+    }
+
     #[allow(dead_code)]
     pub fn add_dashboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let is_local = self.server_url.is_none();
@@ -1068,6 +1139,7 @@ impl DashboardView {
 
     pub fn switch_dashboard(&mut self, dashboard_id: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.open_menu = None;
+        self.skills_menu = None;
         if dashboard_id != self.active_dashboard_id && self.dashboards.contains_key(&dashboard_id) {
             self.active_dashboard_id = dashboard_id;
 
@@ -1496,7 +1568,7 @@ impl DashboardView {
             }
 
             let ongoing = has_descendants && !terminal.read(cx).needs_attention;
-            let current_agent = if ongoing && !agent_name.is_empty() {
+            let current_agent = if !agent_name.is_empty() {
                 Some(agent_name.clone())
             } else {
                 None
@@ -2479,6 +2551,142 @@ impl DashboardView {
         cx.notify();
     }
 
+    pub fn get_active_terminal_tab_id(&self, dashboard_id: usize) -> Option<usize> {
+        let dashboard = self.dashboards.get(&dashboard_id)?;
+        for panel in dashboard.panel_tabs.values() {
+            if let Some(active_tab) = panel.tabs.get(panel.active_tab) {
+                if let PanelContent::Terminal = active_tab.content {
+                    return Some(active_tab.id);
+                }
+            }
+        }
+        for panel in dashboard.panel_tabs.values() {
+            for tab in &panel.tabs {
+                if let PanelContent::Terminal = tab.content {
+                    return Some(tab.id);
+                }
+            }
+        }
+        None
+    }
+
+    pub fn toggle_agent_sessions_menu(
+        &mut self,
+        dashboard_id: usize,
+        panel_id: Option<usize>,
+        tab_id: Option<usize>,
+        agent_name: Option<String>,
+        position: gpui::Point<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(ref m) = self.agent_sessions_menu {
+            if m.dashboard_id == dashboard_id && m.agent_name == agent_name && m.panel_id == panel_id {
+                self.agent_sessions_menu = None;
+                cx.notify();
+                return;
+            }
+        }
+        let current_dir = self.dashboards.get(&dashboard_id).map(|d| d.current_dir.clone());
+        let sessions = if let Some(ref name) = agent_name {
+            scan_agent_sessions(name, current_dir.as_deref())
+        } else {
+            Vec::new()
+        };
+        let effective_tab_id = tab_id.or_else(|| self.get_active_terminal_tab_id(dashboard_id));
+        self.agent_sessions_menu = Some(AgentSessionsMenuState {
+            dashboard_id,
+            panel_id,
+            tab_id: effective_tab_id,
+            agent_name,
+            position,
+            sessions,
+        });
+        cx.notify();
+    }
+
+    pub fn launch_cli_agent(
+        &mut self,
+        dashboard_id: usize,
+        tab_id: Option<usize>,
+        command: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.agent_sessions_menu = None;
+        let effective_tab_id = tab_id.or_else(|| self.get_active_terminal_tab_id(dashboard_id));
+        if let Some(tid) = effective_tab_id {
+            if let Some(terminal) = self.terminals.get(&tid) {
+                let cmd = format!("{}\n", command);
+                terminal.update(cx, |m, _| {
+                    m.paste(&cmd);
+                });
+                let focus_handle = terminal.read(cx).focus_handle.clone();
+                window.on_next_frame(move |window, cx| {
+                    window.focus(&focus_handle, cx);
+                    crate::browser::restore_gpui_focus(window);
+                });
+            }
+        }
+        cx.notify();
+    }
+
+    pub fn resume_agent_session(
+        &mut self,
+        dashboard_id: usize,
+        _panel_id: Option<usize>,
+        tab_id: Option<usize>,
+        session: &AgentSession,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.agent_sessions_menu = None;
+        let agent_lower = session.agent.to_lowercase();
+        let cmd = if agent_lower.contains("antigravity") || agent_lower == "agy" {
+            if !session.id.is_empty() {
+                format!("agy --resume {}\n", session.id)
+            } else {
+                "agy\n".to_string()
+            }
+        } else if agent_lower.contains("opencode") || agent_lower.contains("open-code") {
+            if !session.id.is_empty() {
+                format!("opencode --session {}\n", session.id)
+            } else {
+                "opencode\n".to_string()
+            }
+        } else if agent_lower.contains("pi") {
+            if !session.id.is_empty() {
+                format!("pi --session {}\n", session.id)
+            } else {
+                "pi\n".to_string()
+            }
+        } else if agent_lower.contains("claude") {
+            if !session.id.is_empty() && session.id != "claude-default" {
+                format!("claude --resume {}\n", session.id)
+            } else {
+                "claude\n".to_string()
+            }
+        } else if !session.id.is_empty() {
+            format!("{} {}\n", session.agent, session.id)
+        } else {
+            format!("{}\n", session.agent)
+        };
+
+        let effective_tab_id = tab_id.or_else(|| self.get_active_terminal_tab_id(dashboard_id));
+        if let Some(tid) = effective_tab_id {
+            if let Some(terminal) = self.terminals.get(&tid) {
+                terminal.update(cx, |m, _| {
+                    m.paste(&cmd);
+                });
+                let focus_handle = terminal.read(cx).focus_handle.clone();
+                window.on_next_frame(move |window, cx| {
+                    window.focus(&focus_handle, cx);
+                    crate::browser::restore_gpui_focus(window);
+                });
+            }
+        }
+        cx.notify();
+    }
+
     pub fn split_panel(
         &mut self,
         dashboard_id: usize,
@@ -2811,10 +3019,12 @@ impl DashboardView {
                         is_editor_on,
                         &self.settings.layout,
                         self.open_menu.as_ref(),
+                        self.agent_sessions_menu.as_ref(),
                         &self.terminals,
                         &self.editors,
                         &self.original_contents,
                         &self.tab_scroll_handles,
+                        Some(&dashboard.current_dir),
                         cx,
                     ))
             )
@@ -3487,6 +3697,217 @@ impl Render for DashboardView {
         };
 
         let main = if let Some((dashboard_id, layout, title)) = active {
+            let current_dir = self
+                .dashboards
+                .get(&dashboard_id)
+                .map(|d| d.current_dir.clone())
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
+            let skills = scan_skills_in_dir(&current_dir);
+            let skill_count = skills.len();
+            let skills_is_open = self.skills_menu.as_ref().map_or(false, |m| m.dashboard_id == dashboard_id);
+
+            let detected_agents = scan_installed_cli_agents();
+            let agent_count = detected_agents.len();
+
+            let top_running_agent = {
+                let mut found = None;
+                if let Some(dashboard) = self.dashboards.get(&dashboard_id) {
+                    for (&p_id, panel) in &dashboard.panel_tabs {
+                        if let Some(active_tab) = panel.tabs.get(panel.active_tab) {
+                            if let PanelContent::Terminal = active_tab.content {
+                                if let Some(term) = self.terminals.get(&active_tab.id) {
+                                    if let Some(ref agent) = term.read(cx).running_agent {
+                                        found = Some((p_id, active_tab.id, agent.clone()));
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                found
+            };
+
+            let mut agent_icons = div().flex().items_center().gap_1p5();
+            for (idx, agent) in detected_agents.iter().take(4).enumerate() {
+                let theme = cx.theme();
+                let layout_settings = &self.settings.layout;
+                let agent_name = agent.name.clone();
+                let is_running = top_running_agent.as_ref().map_or(false, |(_, _, a)| a.to_lowercase() == agent_name.to_lowercase());
+                let icon_name = agent_icon(&agent_name);
+
+                agent_icons = agent_icons.child(
+                    div()
+                        .id(ElementId::Integer(800_200 + idx as u64))
+                        .h(px(layout_settings.icon_button_height))
+                        .px_2()
+                        .rounded_sm()
+                        .bg(if is_running { theme.accent } else { theme.background })
+                        .border_1()
+                        .border_color(if is_running { theme.accent } else { theme.border })
+                        .flex()
+                        .items_center()
+                        .gap_1p5()
+                        .cursor_pointer()
+                        .text_color(if is_running { theme.foreground } else { theme.muted_foreground })
+                        .hover(move |s| s.bg(theme.accent).text_color(theme.foreground))
+                        .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, _window, cx| {
+                            this.toggle_agent_sessions_menu(dashboard_id, None, None, Some(agent_name.clone()), event.position, cx);
+                            cx.stop_propagation();
+                        }))
+                        .child(Icon::new(icon_name).size_3p5().text_color(theme.accent))
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_medium()
+                                .child(agent.name.clone()),
+                        )
+                        .when(is_running, |parent| {
+                            parent.child(
+                                div()
+                                    .w(px(5.))
+                                    .h(px(5.))
+                                    .rounded_full()
+                                    .bg(rgb(0x57c994))
+                            )
+                        })
+                );
+            }
+
+            let agents_md_btn = {
+                let theme = cx.theme();
+                let layout_settings = &self.settings.layout;
+                div()
+                    .id(ElementId::Integer(800_005))
+                    .h(px(layout_settings.icon_button_height))
+                    .px_2()
+                    .rounded_sm()
+                    .bg(theme.background)
+                    .border_1()
+                    .border_color(theme.border)
+                    .flex()
+                    .items_center()
+                    .gap_1p5()
+                    .cursor_pointer()
+                    .text_color(theme.foreground)
+                    .hover(move |s| s.bg(theme.accent).text_color(theme.foreground))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        this.open_agents_md(dashboard_id, window, cx);
+                    }))
+                    .child(Icon::new(IconName::Bot).size_3p5())
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_medium()
+                            .child("AGENTS.md"),
+                    )
+                    .when(agent_count > 0, |parent| {
+                        parent.child(
+                            div()
+                                .px_1()
+                                .rounded_full()
+                                .bg(theme.accent)
+                                .text_color(theme.foreground)
+                                .text_xs()
+                                .font_semibold()
+                                .child(agent_count.to_string()),
+                        )
+                    })
+            };
+
+            let skills_btn = {
+                let theme = cx.theme();
+                let layout_settings = &self.settings.layout;
+                let skills_clone = skills.clone();
+                div()
+                    .id(ElementId::Integer(800_003))
+                    .h(px(layout_settings.icon_button_height))
+                    .px_2()
+                    .rounded_sm()
+                    .bg(if skills_is_open { theme.accent } else { theme.background })
+                    .border_1()
+                    .border_color(theme.border)
+                    .flex()
+                    .items_center()
+                    .gap_1p5()
+                    .cursor_pointer()
+                    .text_color(if skills_is_open { theme.foreground } else { theme.muted_foreground })
+                    .hover(move |s| s.bg(theme.accent).text_color(theme.foreground))
+                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, _window, cx| {
+                        if this.skills_menu.is_some() {
+                            this.skills_menu = None;
+                        } else {
+                            this.skills_menu = Some(SkillsMenuState {
+                                dashboard_id,
+                                position: event.position,
+                                skills: skills_clone.clone(),
+                            });
+                        }
+                        cx.stop_propagation();
+                        cx.notify();
+                    }))
+                    .child(Icon::new(IconName::Star).size_3p5())
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_medium()
+                            .child("Skills"),
+                    )
+                    .when(skill_count > 0, |parent| {
+                        parent.child(
+                            div()
+                                .px_1()
+                                .rounded_full()
+                                .bg(theme.accent)
+                                .text_color(theme.foreground)
+                                .text_xs()
+                                .font_semibold()
+                                .child(skill_count.to_string()),
+                        )
+                    })
+                    .child(Icon::new(if skills_is_open { IconName::ChevronUp } else { IconName::ChevronDown }).size_3())
+            };
+
+            let mut skill_icons = div().flex().items_center().gap_1p5();
+            let folder_skills: Vec<SkillInfo> = skills
+                .iter()
+                .filter(|s| s.source_dir != "global")
+                .cloned()
+                .collect();
+            for (idx, skill) in folder_skills.into_iter().take(3).enumerate() {
+                let theme = cx.theme();
+                let layout_settings = &self.settings.layout;
+                let skill_path = skill.path.clone();
+                let skill_name = skill.name.clone();
+                skill_icons = skill_icons.child(
+                    div()
+                        .id(ElementId::Integer(800_100 + idx as u64))
+                        .h(px(layout_settings.icon_button_height))
+                        .px_2()
+                        .rounded_sm()
+                        .bg(theme.background)
+                        .border_1()
+                        .border_color(theme.border)
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .cursor_pointer()
+                        .text_color(theme.muted_foreground)
+                        .hover(move |s| s.bg(theme.accent).text_color(theme.foreground))
+                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                            this.open_file_from_palette(skill_path.clone(), window, cx);
+                        }))
+                        .child(Icon::new(IconName::Star).size_3())
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_normal()
+                                .child(skill_name),
+                        ),
+                );
+            }
+
             let layout_el = self.render_layout(dashboard_id, &layout, window, cx);
             let status_bar_el = self.render_status_bar(window, cx);
             let theme = cx.theme();
@@ -3506,14 +3927,30 @@ impl Render for DashboardView {
                                 .px_3()
                                 .flex()
                                 .items_center()
+                                .justify_between()
                                 .text_sm()
                                 .font_semibold()
                                 .text_color(theme.foreground)
                                 .bg(theme.secondary)
                                 .border_b_1()
                                 .border_color(theme.border)
-                                .child(sidebar_toggle_btn)
-                                .child(title),
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .child(sidebar_toggle_btn)
+                                        .child(title),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap_1p5()
+                                        .child(agent_icons)
+                                        .child(agents_md_btn)
+                                        .child(skill_icons)
+                                        .child(skills_btn),
+                                ),
                         )
                         .child(
                             div()
@@ -3915,6 +4352,705 @@ impl Render for DashboardView {
                     cx.notify();
                 }));
                 
+            root = root.child(catcher).child(menu_div);
+        }
+
+        if let Some(ref menu) = self.skills_menu {
+            let theme = cx.theme();
+            let position = menu.position;
+            let dashboard_id = menu.dashboard_id;
+            let skills = menu.skills.clone();
+            
+            let window_size = window.bounds().size;
+            let menu_width = px(280.);
+            let menu_height = px(300.);
+            
+            let mut left_pos = position.x;
+            if left_pos + menu_width > window_size.width {
+                left_pos = window_size.width - menu_width - px(10.);
+            }
+            if left_pos < px(0.) {
+                left_pos = px(10.);
+            }
+            
+            let mut top_pos = position.y + px(10.);
+            if top_pos + menu_height > window_size.height {
+                top_pos = window_size.height - menu_height - px(10.);
+            }
+            if top_pos < px(0.) {
+                top_pos = px(10.);
+            }
+            
+            let mut list_container = div()
+                .id(ElementId::Integer(2_400_500))
+                .flex()
+                .flex_col()
+                .gap_1()
+                .max_h(px(200.))
+                .overflow_y_scroll();
+
+            if skills.is_empty() {
+                list_container = list_container.child(
+                    div()
+                        .px_2()
+                        .py_2()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child("No skills found in workspace folder (skills/, .agents/skills, etc.)"),
+                );
+            } else {
+                for (idx, skill) in skills.iter().enumerate() {
+                    let skill_path = skill.path.clone();
+                    let skill_name = skill.name.clone();
+                    let skill_desc = skill.description.clone().unwrap_or_else(|| skill.source_dir.clone());
+                    
+                    list_container = list_container.child(
+                        div()
+                            .id(ElementId::Integer(2_400_000 + idx as u64))
+                            .px_2()
+                            .py_1p5()
+                            .rounded_sm()
+                            .flex()
+                            .flex_col()
+                            .gap_0p5()
+                            .cursor_pointer()
+                            .hover(|s| s.bg(theme.muted))
+                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                this.skills_menu = None;
+                                this.open_file_from_palette(skill_path.clone(), window, cx);
+                            }))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap_1p5()
+                                            .child(Icon::new(IconName::Star).size_3p5().text_color(theme.accent))
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .font_semibold()
+                                                    .text_color(theme.foreground)
+                                                    .child(skill_name),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(theme.muted_foreground)
+                                            .child(skill.source_dir.clone()),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(theme.muted_foreground)
+                                    .overflow_hidden()
+                                    .child(skill_desc),
+                            ),
+                    );
+                }
+            }
+
+            let menu_div = div()
+                .absolute()
+                .top(top_pos)
+                .left(left_pos)
+                .w(menu_width)
+                .bg(theme.background)
+                .border_1()
+                .border_color(theme.border)
+                .rounded_md()
+                .p_2()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .shadow_md()
+                .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                    cx.stop_propagation();
+                })
+                .on_mouse_down(MouseButton::Right, |_, _, cx| {
+                    cx.stop_propagation();
+                })
+                .child(
+                    div()
+                        .px_2()
+                        .py_1()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .border_b_1()
+                        .border_color(theme.border)
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_semibold()
+                                .text_color(theme.muted_foreground)
+                                .child("WORKSPACE SKILLS"),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child(format!("{} total", skills.len())),
+                        ),
+                )
+                .child(list_container)
+                .child(
+                    div()
+                        .border_t_1()
+                        .border_color(theme.border)
+                        .pt_1()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            div()
+                                .id(ElementId::Integer(2_400_999))
+                                .px_2()
+                                .py_1()
+                                .rounded_sm()
+                                .flex()
+                                .items_center()
+                                .gap_1p5()
+                                .cursor_pointer()
+                                .text_color(theme.foreground)
+                                .hover(|s| s.bg(theme.muted).text_color(theme.accent))
+                                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                    this.create_new_skill(dashboard_id, window, cx);
+                                }))
+                                .child(Icon::new(IconName::Plus).size_3p5().text_color(theme.accent))
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_medium()
+                                        .child("Create new skill (SKILL.md)"),
+                                ),
+                        ),
+                );
+
+            let catcher = div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .on_mouse_down(MouseButton::Left, cx.listener(|this, _: &MouseDownEvent, _window, cx| {
+                    this.skills_menu = None;
+                    cx.stop_propagation();
+                    cx.notify();
+                }))
+                .on_mouse_down(MouseButton::Right, cx.listener(|this, _: &MouseDownEvent, _window, cx| {
+                    this.skills_menu = None;
+                    cx.stop_propagation();
+                    cx.notify();
+                }));
+
+            root = root.child(catcher).child(menu_div);
+        }
+
+        if let Some(ref menu) = self.agent_sessions_menu {
+            let theme = cx.theme();
+            let position = menu.position;
+            let dashboard_id = menu.dashboard_id;
+            let panel_id = menu.panel_id;
+            let tab_id = menu.tab_id;
+            let agent_name = menu.agent_name.clone();
+            let sessions = menu.sessions.clone();
+            let current_dir = self.dashboards.get(&dashboard_id).map(|d| d.current_dir.clone());
+            let detected_agents = scan_installed_cli_agents();
+
+            let window_size = window.bounds().size;
+            let menu_width = px(400.);
+            let menu_height = px(380.);
+
+            let mut left_pos = position.x;
+            if left_pos + menu_width > window_size.width {
+                left_pos = window_size.width - menu_width - px(10.);
+            }
+            if left_pos < px(0.) {
+                left_pos = px(10.);
+            }
+
+            let mut top_pos = position.y + px(10.);
+            if top_pos + menu_height > window_size.height {
+                top_pos = window_size.height - menu_height - px(10.);
+            }
+            if top_pos < px(0.) {
+                top_pos = px(10.);
+            }
+
+            let mut menu_div = div()
+                .absolute()
+                .top(top_pos)
+                .left(left_pos)
+                .w(menu_width)
+                .bg(theme.background)
+                .border_1()
+                .border_color(theme.border)
+                .rounded_md()
+                .p_2()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .shadow_md()
+                .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                    cx.stop_propagation();
+                })
+                .on_mouse_down(MouseButton::Right, |_, _, cx| {
+                    cx.stop_propagation();
+                });
+
+            if let Some(ref active_agent) = agent_name {
+                let active_agent_name = active_agent.clone();
+                let matching_cmd = detected_agents
+                    .iter()
+                    .find(|a| a.name.to_lowercase() == active_agent_name.to_lowercase())
+                    .map(|a| a.command.clone())
+                    .unwrap_or_else(|| active_agent_name.to_lowercase());
+
+                let mut list_container = div()
+                    .id(ElementId::Integer(2_700_500))
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .max_h(px(270.))
+                    .overflow_y_scroll();
+
+                if sessions.is_empty() {
+                    list_container = list_container.child(
+                        div()
+                            .px_3()
+                            .py_4()
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .gap_1()
+                            .child(
+                                Icon::new(agent_icon(&active_agent_name))
+                                    .size(px(24.))
+                                    .text_color(theme.muted_foreground)
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(theme.muted_foreground)
+                                    .child(format!("No previous sessions found for {} in this workspace", active_agent_name)),
+                            ),
+                    );
+                } else {
+                    for (idx, session) in sessions.iter().enumerate() {
+                        let session_clone = session.clone();
+                        let session_id = session.id.clone();
+                        let session_title = session.title.clone();
+                        let session_rel = session.relative_time.clone();
+                        let session_ws = session.workspace.clone();
+
+                        let ws_label = session_ws.as_ref().map(|ws| {
+                            let path = std::path::Path::new(ws);
+                            path.file_name().map_or(ws.clone(), |n| n.to_string_lossy().to_string())
+                        });
+
+                        list_container = list_container.child(
+                            div()
+                                .id(ElementId::Integer(2_700_000 + idx as u64))
+                                .px_2p5()
+                                .py_2()
+                                .rounded_sm()
+                                .bg(theme.secondary)
+                                .border_1()
+                                .border_color(theme.border)
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .cursor_pointer()
+                                .hover(|s| s.bg(theme.muted))
+                                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                    this.resume_agent_session(dashboard_id, panel_id, tab_id, &session_clone, window, cx);
+                                }))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .justify_between()
+                                        .gap_2()
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .text_xs()
+                                                .font_semibold()
+                                                .text_color(theme.foreground)
+                                                .overflow_hidden()
+                                                .child(session_title)
+                                        )
+                                        .when(!session_rel.is_empty(), |parent| {
+                                            parent.child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(theme.muted_foreground)
+                                                    .font_normal()
+                                                    .child(session_rel)
+                                            )
+                                        })
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .justify_between()
+                                        .gap_2()
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .items_center()
+                                                .gap_1p5()
+                                                .when(ws_label.is_some(), |parent| {
+                                                    parent.child(
+                                                        div()
+                                                            .flex()
+                                                            .items_center()
+                                                            .gap_1()
+                                                            .text_xs()
+                                                            .text_color(theme.muted_foreground)
+                                                            .child(Icon::new(IconName::Folder).size_3())
+                                                            .child(ws_label.unwrap_or_default())
+                                                    )
+                                                })
+                                                .when(!session_id.is_empty(), |parent| {
+                                                    let id_short = if session_id.len() > 12 {
+                                                        format!("{}...", &session_id[..9])
+                                                    } else {
+                                                        session_id.clone()
+                                                    };
+                                                    parent.child(
+                                                        div()
+                                                            .px_1()
+                                                            .rounded_sm()
+                                                            .bg(theme.background)
+                                                            .border_1()
+                                                            .border_color(theme.border)
+                                                            .text_xs()
+                                                            .text_color(theme.muted_foreground)
+                                                            .child(id_short)
+                                                    )
+                                                })
+                                        )
+                                        .child(
+                                            div()
+                                                .px_1p5()
+                                                .py_0p5()
+                                                .rounded_sm()
+                                                .bg(theme.accent)
+                                                .text_color(theme.foreground)
+                                                .text_xs()
+                                                .font_medium()
+                                                .child("Resume ↵")
+                                        )
+                                )
+                        );
+                    }
+                }
+
+                let launch_cmd = matching_cmd.clone();
+                let header = div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .pb_1()
+                    .border_b_1()
+                    .border_color(theme.border)
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1p5()
+                            .child(
+                                div()
+                                    .id(ElementId::Integer(2_700_990))
+                                    .cursor_pointer()
+                                    .text_color(theme.muted_foreground)
+                                    .hover(|s| s.text_color(theme.foreground))
+                                    .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                                        if let Some(ref mut m) = this.agent_sessions_menu {
+                                            m.agent_name = None;
+                                            m.sessions = Vec::new();
+                                        }
+                                        cx.notify();
+                                    }))
+                                    .child(Icon::new(IconName::ChevronLeft).size_3p5())
+                            )
+                            .child(Icon::new(agent_icon(&active_agent_name)).size_3p5().text_color(theme.accent))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_semibold()
+                                    .text_color(theme.foreground)
+                                    .child(format!("{} Sessions", active_agent_name)),
+                            )
+                            .child(
+                                div()
+                                    .px_1()
+                                    .rounded_full()
+                                    .bg(theme.muted)
+                                    .text_color(theme.foreground)
+                                    .text_xs()
+                                    .font_semibold()
+                                    .child(sessions.len().to_string()),
+                            )
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1p5()
+                            .child(
+                                div()
+                                    .id(ElementId::Integer(2_700_991))
+                                    .px_2()
+                                    .py_0p5()
+                                    .rounded_sm()
+                                    .bg(theme.accent)
+                                    .border_1()
+                                    .border_color(theme.border)
+                                    .cursor_pointer()
+                                    .text_xs()
+                                    .font_medium()
+                                    .text_color(theme.foreground)
+                                    .hover(|s| s.bg(theme.muted))
+                                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                        this.launch_cli_agent(dashboard_id, tab_id, &launch_cmd, window, cx);
+                                    }))
+                                    .child(format!("▶ Start {}", matching_cmd))
+                            )
+                            .child(
+                                div()
+                                    .id(ElementId::Integer(2_700_999))
+                                    .cursor_pointer()
+                                    .text_color(theme.muted_foreground)
+                                    .hover(|s| s.text_color(theme.foreground))
+                                    .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+                                        this.agent_sessions_menu = None;
+                                        cx.notify();
+                                    }))
+                                    .child(Icon::new(IconName::Close).size_3())
+                            )
+                    );
+
+                menu_div = menu_div.child(header).child(list_container);
+            } else {
+                let mut list_container = div()
+                    .id(ElementId::Integer(2_700_500))
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .max_h(px(270.))
+                    .overflow_y_scroll();
+
+                for (idx, agent) in detected_agents.iter().enumerate() {
+                    let agent_name = agent.name.clone();
+                    let agent_cmd = agent.command.clone();
+                    let session_count = scan_agent_sessions(&agent_name, current_dir.as_deref()).len();
+                    let icon_name = agent_icon(&agent_name);
+
+                    let agent_name_for_sess = agent_name.clone();
+                    let agent_cmd_for_launch = agent_cmd.clone();
+
+                    list_container = list_container.child(
+                        div()
+                            .id(ElementId::Integer(2_701_000 + idx as u64))
+                            .px_2p5()
+                            .py_2()
+                            .rounded_sm()
+                            .bg(theme.secondary)
+                            .border_1()
+                            .border_color(theme.border)
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(Icon::new(icon_name).size_4().text_color(theme.accent))
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .font_semibold()
+                                                    .text_color(theme.foreground)
+                                                    .child(agent_name)
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(theme.muted_foreground)
+                                                    .child(if session_count > 0 {
+                                                        format!("{} saved sessions", session_count)
+                                                    } else {
+                                                        format!("Command: {}", agent_cmd)
+                                                    })
+                                            )
+                                    )
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_1p5()
+                                    .when(session_count > 0, |parent| {
+                                        parent.child(
+                                            div()
+                                                .id(ElementId::Integer(2_702_000 + idx as u64))
+                                                .px_2()
+                                                .py_0p5()
+                                                .rounded_sm()
+                                                .bg(theme.background)
+                                                .border_1()
+                                                .border_color(theme.border)
+                                                .cursor_pointer()
+                                                .text_xs()
+                                                .font_medium()
+                                                .text_color(theme.foreground)
+                                                .hover(|s| s.bg(theme.muted))
+                                                .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                                                    let current_dir = this.dashboards.get(&dashboard_id).map(|d| d.current_dir.clone());
+                                                    let sessions = scan_agent_sessions(&agent_name_for_sess, current_dir.as_deref());
+                                                    if let Some(ref mut m) = this.agent_sessions_menu {
+                                                        m.agent_name = Some(agent_name_for_sess.clone());
+                                                        m.sessions = sessions;
+                                                    }
+                                                    cx.notify();
+                                                }))
+                                                .child(format!("Sessions ({}) ▾", session_count))
+                                        )
+                                    })
+                                    .child(
+                                        div()
+                                            .id(ElementId::Integer(2_703_000 + idx as u64))
+                                            .px_2()
+                                            .py_0p5()
+                                            .rounded_sm()
+                                            .bg(theme.accent)
+                                            .border_1()
+                                            .border_color(theme.border)
+                                            .cursor_pointer()
+                                            .text_xs()
+                                            .font_medium()
+                                            .text_color(theme.foreground)
+                                            .hover(|s| s.bg(theme.muted))
+                                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                                this.launch_cli_agent(dashboard_id, tab_id, &agent_cmd_for_launch, window, cx);
+                                            }))
+                                            .child(format!("▶ Launch {}", agent_cmd))
+                                    )
+                            )
+                    );
+                }
+
+                let header = div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .pb_1()
+                    .border_b_1()
+                    .border_color(theme.border)
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1p5()
+                            .child(Icon::new(IconName::Bot).size_3p5().text_color(theme.accent))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_semibold()
+                                    .text_color(theme.foreground)
+                                    .child("AI Agents & Sessions"),
+                            )
+                            .child(
+                                div()
+                                    .px_1()
+                                    .rounded_full()
+                                    .bg(theme.muted)
+                                    .text_color(theme.foreground)
+                                    .text_xs()
+                                    .font_semibold()
+                                    .child(format!("{} detected", detected_agents.len())),
+                            )
+                    )
+                    .child(
+                        div()
+                            .id(ElementId::Integer(2_700_999))
+                            .cursor_pointer()
+                            .text_color(theme.muted_foreground)
+                            .hover(|s| s.text_color(theme.foreground))
+                            .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+                                this.agent_sessions_menu = None;
+                                cx.notify();
+                            }))
+                            .child(Icon::new(IconName::Close).size_3())
+                    );
+
+                let footer = div()
+                    .pt_1()
+                    .border_t_1()
+                    .border_color(theme.border)
+                    .child(
+                        div()
+                            .id(ElementId::Integer(2_704_000))
+                            .w_full()
+                            .h(px(24.))
+                            .px_2()
+                            .rounded_sm()
+                            .bg(theme.secondary)
+                            .border_1()
+                            .border_color(theme.border)
+                            .flex()
+                            .items_center()
+                            .gap_1p5()
+                            .cursor_pointer()
+                            .text_color(theme.foreground)
+                            .hover(|s| s.bg(theme.muted).text_color(theme.accent))
+                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                this.agent_sessions_menu = None;
+                                this.open_agents_md(dashboard_id, window, cx);
+                            }))
+                            .child(Icon::new(IconName::BookOpen).size_3p5().text_color(theme.accent))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_medium()
+                                    .child("Open AGENTS.md Rules & Documentation"),
+                            ),
+                    );
+
+                menu_div = menu_div.child(header).child(list_container).child(footer);
+            }
+
+            let catcher = div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .on_mouse_down(MouseButton::Left, cx.listener(|this, _: &MouseDownEvent, _window, cx| {
+                    this.agent_sessions_menu = None;
+                    cx.stop_propagation();
+                    cx.notify();
+                }))
+                .on_mouse_down(MouseButton::Right, cx.listener(|this, _: &MouseDownEvent, _window, cx| {
+                    this.agent_sessions_menu = None;
+                    cx.stop_propagation();
+                    cx.notify();
+                }));
+
             root = root.child(catcher).child(menu_div);
         }
 
@@ -5435,10 +6571,12 @@ fn panel_header(
     is_editor_on: bool,
     settings: &LayoutSettings,
     open_menu: Option<&TabMenuState>,
+    _agent_sessions_menu: Option<&AgentSessionsMenuState>,
     terminals: &HashMap<usize, Entity<TerminalModel>>,
     editors: &HashMap<usize, Entity<InputState>>,
     original_contents: &HashMap<usize, String>,
     tab_scroll_handles: &std::cell::RefCell<HashMap<usize, gpui::ScrollHandle>>,
+    _current_workspace: Option<&Path>,
     cx: &mut Context<DashboardView>,
 ) -> AnyElement {
     let theme = cx.theme();
@@ -9035,4 +10173,580 @@ fn dropdown_item(
         .on_click(handler)
         .child(label)
 }
+
+pub fn parse_skill_metadata(path: &Path) -> (Option<String>, Option<String>) {
+    if !path.is_file() {
+        return (None, None);
+    }
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return (None, None),
+    };
+
+    let mut name = None;
+    let mut description = None;
+
+    let lines: Vec<&str> = content.lines().collect();
+    if lines.first().map_or(false, |l| l.trim() == "---") {
+        for line in lines.iter().skip(1) {
+            let line = line.trim();
+            if line == "---" {
+                break;
+            }
+            if let Some(rest) = line.strip_prefix("name:") {
+                let n = rest.trim().trim_matches('"').trim_matches('\'').to_string();
+                if !n.is_empty() {
+                    name = Some(n);
+                }
+            } else if let Some(rest) = line.strip_prefix("description:") {
+                let d = rest.trim().trim_matches('"').trim_matches('\'').to_string();
+                if !d.is_empty() {
+                    description = Some(d);
+                }
+            }
+        }
+    }
+
+    if description.is_none() {
+        for line in lines {
+            let trimmed = line.trim();
+            if trimmed.starts_with('#') {
+                let header = trimmed.trim_start_matches('#').trim().to_string();
+                if name.is_none() && !header.is_empty() {
+                    name = Some(header);
+                }
+            } else if !trimmed.is_empty() && !trimmed.starts_with("---") && description.is_none() {
+                description = Some(trimmed.to_string());
+                break;
+            }
+        }
+    }
+
+    (name, description)
+}
+
+pub fn scan_skills_in_dir(root: &Path) -> Vec<SkillInfo> {
+    let mut skills = Vec::new();
+    let mut seen_paths = std::collections::HashSet::new();
+    let mut seen_names = std::collections::HashSet::new();
+
+    let subdirs = [
+        "skills",
+        ".agents/skills",
+        ".gemini/skills",
+        ".claude/skills",
+        ".github/skills",
+        ".cursor/skills",
+        ".antigravity/skills",
+    ];
+
+    for rel_dir in &subdirs {
+        let skills_dir = root.join(rel_dir);
+        if skills_dir.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&skills_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    let file_name = entry.file_name().to_string_lossy().to_string();
+                    if file_name.starts_with('.') {
+                        continue;
+                    }
+
+                    if path.is_dir() {
+                        let mut skill_file = None;
+                        for candidate_name in &["SKILL.md", "skill.md", "README.md", "index.md", "instructions.md"] {
+                            let candidate_path = path.join(candidate_name);
+                            if candidate_path.is_file() {
+                                skill_file = Some(candidate_path);
+                                break;
+                            }
+                        }
+
+                        let target_path = skill_file.unwrap_or_else(|| path.clone());
+                        let canonical = target_path.canonicalize().unwrap_or_else(|_| target_path.clone());
+                        let (parsed_name, parsed_desc) = parse_skill_metadata(&target_path);
+                        let name = parsed_name.unwrap_or(file_name);
+                        let norm_name = name.trim().to_lowercase();
+
+                        if seen_paths.insert(canonical) && seen_names.insert(norm_name) {
+                            skills.push(SkillInfo {
+                                name,
+                                path: target_path,
+                                description: parsed_desc,
+                                source_dir: rel_dir.to_string(),
+                            });
+                        }
+                    } else if path.is_file() && file_name.ends_with(".md") {
+                        let default_name = file_name.trim_end_matches(".md").to_string();
+                        let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+                        let (parsed_name, parsed_desc) = parse_skill_metadata(&path);
+                        let name = parsed_name.unwrap_or(default_name);
+                        let norm_name = name.trim().to_lowercase();
+
+                        if seen_paths.insert(canonical) && seen_names.insert(norm_name) {
+                            skills.push(SkillInfo {
+                                name,
+                                path: path.clone(),
+                                description: parsed_desc,
+                                source_dir: rel_dir.to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from) {
+        let global_dirs = [
+            home.join(".gemini/skills"),
+            home.join(".agents/skills"),
+            home.join(".gemini/antigravity-cli/builtin/skills"),
+            home.join(".claude/skills"),
+        ];
+        for g_dir in &global_dirs {
+            if g_dir.is_dir() {
+                if let Ok(entries) = std::fs::read_dir(g_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        let file_name = entry.file_name().to_string_lossy().to_string();
+                        if file_name.starts_with('.') {
+                            continue;
+                        }
+                        if path.is_dir() {
+                            let mut skill_file = None;
+                            for candidate_name in &["SKILL.md", "skill.md", "README.md", "index.md", "instructions.md"] {
+                                let candidate_path = path.join(candidate_name);
+                                if candidate_path.is_file() {
+                                    skill_file = Some(candidate_path);
+                                    break;
+                                }
+                            }
+                            let target_path = skill_file.unwrap_or_else(|| path.clone());
+                            let canonical = target_path.canonicalize().unwrap_or_else(|_| target_path.clone());
+                            let (parsed_name, parsed_desc) = parse_skill_metadata(&target_path);
+                            let name = parsed_name.unwrap_or(file_name);
+                            let norm_name = name.trim().to_lowercase();
+
+                            if seen_paths.insert(canonical) && seen_names.insert(norm_name) {
+                                skills.push(SkillInfo {
+                                    name,
+                                    path: target_path,
+                                    description: parsed_desc,
+                                    source_dir: "global".to_string(),
+                                });
+                            }
+                        } else if path.is_file() && file_name.ends_with(".md") {
+                            let default_name = file_name.trim_end_matches(".md").to_string();
+                            let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+                            let (parsed_name, parsed_desc) = parse_skill_metadata(&path);
+                            let name = parsed_name.unwrap_or(default_name);
+                            let norm_name = name.trim().to_lowercase();
+
+                            if seen_paths.insert(canonical) && seen_names.insert(norm_name) {
+                                skills.push(SkillInfo {
+                                    name,
+                                    path: path.clone(),
+                                    description: parsed_desc,
+                                    source_dir: "global".to_string(),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    skills
+}
+
+#[derive(Clone, Debug)]
+pub struct DetectedAgent {
+    pub name: String,
+    pub command: String,
+    pub path: Option<PathBuf>,
+    pub installed: bool,
+}
+
+pub fn scan_installed_cli_agents() -> Vec<DetectedAgent> {
+    let mut detected = Vec::new();
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from);
+
+    let path_env = std::env::var("PATH").unwrap_or_default();
+    let mut search_dirs: Vec<PathBuf> = std::env::split_paths(&path_env).collect();
+    if let Some(ref h) = home {
+        search_dirs.push(h.join(".local/bin"));
+        search_dirs.push(h.join(".cargo/bin"));
+        search_dirs.push(PathBuf::from("/opt/homebrew/bin"));
+        search_dirs.push(PathBuf::from("/usr/local/bin"));
+    }
+
+    let is_exe_in_path = |name: &str| -> Option<PathBuf> {
+        for dir in &search_dirs {
+            let candidate = dir.join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+            #[cfg(windows)]
+            {
+                let candidate_exe = dir.join(format!("{}.exe", name));
+                if candidate_exe.is_file() {
+                    return Some(candidate_exe);
+                }
+                let candidate_cmd = dir.join(format!("{}.cmd", name));
+                if candidate_cmd.is_file() {
+                    return Some(candidate_cmd);
+                }
+            }
+        }
+        None
+    };
+
+    let check_agent = |name: &str, cmds: &[&str], config_rel_path: Option<&str>| -> Option<DetectedAgent> {
+        for &cmd in cmds {
+            if let Some(p) = is_exe_in_path(cmd) {
+                return Some(DetectedAgent {
+                    name: name.to_string(),
+                    command: cmd.to_string(),
+                    path: Some(p),
+                    installed: true,
+                });
+            }
+        }
+        if let (Some(ref h), Some(cfg)) = (&home, config_rel_path) {
+            let cfg_path = h.join(cfg);
+            if cfg_path.exists() {
+                return Some(DetectedAgent {
+                    name: name.to_string(),
+                    command: cmds.first().copied().unwrap_or(name).to_string(),
+                    path: Some(cfg_path),
+                    installed: true,
+                });
+            }
+        }
+        None
+    };
+
+    let agents: [(&str, &[&str], Option<&str>); 9] = [
+        ("Antigravity", &["agy", "antigravity"], Some(".antigravity")),
+        ("OpenCode", &["opencode", "open-code"], Some(".config/opencode")),
+        ("Pi CLI", &["pi", "pi-coding-agent"], Some(".pi")),
+        ("Copilot CLI", &["copilot", "copilot-cli", "gh-copilot"], Some(".copilot")),
+        ("Gemini CLI", &["gemini"], Some(".gemini")),
+        ("Claude Code", &["claude", "claude-code"], Some(".claude")),
+        ("Cursor", &["cursor"], Some(".cursor")),
+        ("Aider", &["aider"], None),
+        ("Mentat", &["mentat"], None),
+    ];
+
+    for (name, cmds, cfg) in agents {
+        if let Some(agent) = check_agent(name, cmds, cfg) {
+            detected.push(agent);
+        }
+    }
+
+    detected
+}
+
+pub fn format_relative_time(timestamp_ms: Option<u64>) -> String {
+    let Some(ts) = timestamp_ms else {
+        return "".to_string();
+    };
+    let now_ms = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => d.as_millis() as u64,
+        Err(_) => return "".to_string(),
+    };
+    if ts > now_ms {
+        return "Just now".to_string();
+    }
+    let diff_secs = (now_ms - ts) / 1000;
+    if diff_secs < 60 {
+        "Just now".to_string()
+    } else if diff_secs < 3600 {
+        let mins = diff_secs / 60;
+        format!("{}m ago", mins)
+    } else if diff_secs < 86400 {
+        let hours = diff_secs / 3600;
+        format!("{}h ago", hours)
+    } else if diff_secs < 86400 * 30 {
+        let days = diff_secs / 86400;
+        format!("{}d ago", days)
+    } else {
+        let months = diff_secs / (86400 * 30);
+        format!("{}mo ago", months)
+    }
+}
+
+pub fn scan_agent_sessions(agent_name: &str, current_workspace: Option<&Path>) -> Vec<AgentSession> {
+    let mut sessions = Vec::new();
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from);
+    let agent_lower = agent_name.to_lowercase();
+
+    if agent_lower.contains("antigravity") || agent_lower == "agy" {
+        if let Some(ref h) = home {
+            let hist_paths = [
+                h.join(".gemini/antigravity-cli/history.jsonl"),
+                h.join(".gemini/antigravity/history.jsonl"),
+                h.join(".antigravity/history.jsonl"),
+                h.join(".antigravitycli/history.jsonl"),
+            ];
+            let mut seen = std::collections::HashSet::new();
+            for hp in hist_paths {
+                if let Ok(content) = std::fs::read_to_string(&hp) {
+                    let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+                    for line in lines.into_iter().rev() {
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
+                            let cid = val.get("conversationId").and_then(|v| v.as_str()).unwrap_or("");
+                            let display = val.get("display").and_then(|v| v.as_str()).unwrap_or("").trim();
+                            if display.is_empty() {
+                                continue;
+                            }
+                            let key = if !cid.is_empty() { cid.to_string() } else { display.to_string() };
+                            if seen.contains(&key) {
+                                continue;
+                            }
+                            seen.insert(key);
+                            let title = display.lines().next().unwrap_or(display);
+                            let title = if title.chars().count() > 80 {
+                                format!("{}...", title.chars().take(77).collect::<String>())
+                            } else {
+                                title.to_string()
+                            };
+                            let ws = val.get("workspace").and_then(|v| v.as_str()).map(|s| s.to_string());
+                            let ts = val.get("timestamp").and_then(|v| v.as_u64());
+                            let rel = format_relative_time(ts);
+                            sessions.push(AgentSession {
+                                id: cid.to_string(),
+                                title,
+                                agent: "Antigravity".to_string(),
+                                workspace: ws,
+                                timestamp_ms: ts,
+                                relative_time: rel,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    } else if agent_lower.contains("opencode") || agent_lower.contains("open-code") {
+        if let Some(ref h) = home {
+            let session_dir = h.join(".local/share/opencode/storage/session");
+            if let Ok(entries) = std::fs::read_dir(&session_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        if let Ok(sub_entries) = std::fs::read_dir(&path) {
+                            for sub in sub_entries.flatten() {
+                                let sub_path = sub.path();
+                                if sub_path.extension().map_or(false, |ext| ext == "json") {
+                                    if let Ok(data) = std::fs::read_to_string(&sub_path) {
+                                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&data) {
+                                            let id = val.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                            let title_raw = val.get("title").and_then(|v| v.as_str())
+                                                .or_else(|| val.get("slug").and_then(|v| v.as_str()))
+                                                .unwrap_or("Untitled session");
+                                            let title = if title_raw.chars().count() > 80 {
+                                                format!("{}...", title_raw.chars().take(77).collect::<String>())
+                                            } else {
+                                                title_raw.to_string()
+                                            };
+                                            let ws = val.get("directory").and_then(|v| v.as_str()).map(|s| s.to_string());
+                                            let ts = val.get("time").and_then(|t| {
+                                                t.get("updated").and_then(|v| v.as_u64())
+                                                    .or_else(|| t.get("created").and_then(|v| v.as_u64()))
+                                            });
+                                            let rel = format_relative_time(ts);
+                                            sessions.push(AgentSession {
+                                                id,
+                                                title,
+                                                agent: "OpenCode".to_string(),
+                                                workspace: ws,
+                                                timestamp_ms: ts,
+                                                relative_time: rel,
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } else if agent_lower.contains("pi") {
+        if let Some(ref h) = home {
+            let session_dir = h.join(".pi/agent/sessions");
+            if let Ok(entries) = std::fs::read_dir(&session_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        if let Ok(sub_entries) = std::fs::read_dir(&path) {
+                            for sub in sub_entries.flatten() {
+                                let sub_path = sub.path();
+                                if sub_path.extension().map_or(false, |ext| ext == "jsonl") {
+                                    if let Ok(file) = std::fs::File::open(&sub_path) {
+                                        use std::io::BufRead;
+                                        let reader = std::io::BufReader::new(file);
+                                        let mut lines = reader.lines();
+                                        if let Some(Ok(first_line)) = lines.next() {
+                                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&first_line) {
+                                                let id = val.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                                let ws = val.get("cwd").and_then(|v| v.as_str()).map(|s| s.to_string());
+                                                let ts_str = val.get("timestamp").and_then(|v| v.as_str()).unwrap_or("");
+                                                let rel = if ts_str.len() >= 10 {
+                                                    ts_str[..10].to_string()
+                                                } else {
+                                                    "".to_string()
+                                                };
+                                                let mut title = format!("Session {}", if id.len() >= 8 { &id[..8] } else { &id });
+                                                for line_res in lines.take(15) {
+                                                    if let Ok(l) = line_res {
+                                                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&l) {
+                                                            if v.get("type").and_then(|t| t.as_str()) == Some("message") {
+                                                                if let Some(msg) = v.get("message") {
+                                                                    if msg.get("role").and_then(|r| r.as_str()) == Some("user") {
+                                                                        if let Some(c) = msg.get("content") {
+                                                                            if let Some(s) = c.as_str() {
+                                                                                title = s.lines().next().unwrap_or(s).to_string();
+                                                                                break;
+                                                                            } else if let Some(arr) = c.as_array() {
+                                                                                if let Some(item) = arr.first() {
+                                                                                    if let Some(txt) = item.get("text").and_then(|t| t.as_str()) {
+                                                                                        title = txt.lines().next().unwrap_or(txt).to_string();
+                                                                                        break;
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                let title = if title.chars().count() > 80 {
+                                                    format!("{}...", title.chars().take(77).collect::<String>())
+                                                } else {
+                                                    title
+                                                };
+                                                sessions.push(AgentSession {
+                                                    id,
+                                                    title,
+                                                    agent: "Pi CLI".to_string(),
+                                                    workspace: ws,
+                                                    timestamp_ms: None,
+                                                    relative_time: rel,
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } else if agent_lower.contains("gemini") {
+        if let Some(ref h) = home {
+            let hist_dir = h.join(".gemini/history");
+            if let Ok(entries) = std::fs::read_dir(&hist_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        let ws = std::fs::read_to_string(path.join(".project_root")).ok().map(|s| s.trim().to_string());
+                        let name = path.file_name().map_or("Project", |n| n.to_str().unwrap_or("Project")).to_string();
+                        sessions.push(AgentSession {
+                            id: name.clone(),
+                            title: format!("Gemini project: {}", name),
+                            agent: "Gemini CLI".to_string(),
+                            workspace: ws,
+                            timestamp_ms: None,
+                            relative_time: "".to_string(),
+                        });
+                    }
+                }
+            }
+        }
+    } else if agent_lower.contains("claude") {
+        if let Some(ref h) = home {
+            let claude_dir = h.join(".claude");
+            if claude_dir.exists() {
+                sessions.push(AgentSession {
+                    id: "claude-default".to_string(),
+                    title: "Claude Code Project Session".to_string(),
+                    agent: "Claude Code".to_string(),
+                    workspace: current_workspace.map(|p| p.to_string_lossy().to_string()),
+                    timestamp_ms: None,
+                    relative_time: "".to_string(),
+                });
+            }
+        }
+    }
+
+    if let Some(cw) = current_workspace {
+        sessions.retain(|s| {
+            if let Some(ref ws) = s.workspace {
+                is_workspace_match(ws, cw)
+            } else {
+                false
+            }
+        });
+    }
+
+    sessions.sort_by(|a, b| b.timestamp_ms.cmp(&a.timestamp_ms));
+
+    sessions
+}
+
+fn is_workspace_match(session_ws: &str, current_ws: &Path) -> bool {
+    let s_clean = session_ws.trim();
+    if s_clean.is_empty() {
+        return false;
+    }
+
+    let p_session = PathBuf::from(s_clean);
+
+    let s_norm = s_clean.trim_end_matches('/');
+    let cur_str = current_ws.to_string_lossy();
+    let c_norm = cur_str.trim_end_matches('/');
+    if s_norm.eq_ignore_ascii_case(c_norm) {
+        return true;
+    }
+
+    if let (Ok(c1), Ok(c2)) = (p_session.canonicalize(), current_ws.canonicalize()) {
+        if c1 == c2 {
+            return true;
+        }
+    }
+    if let Ok(c2) = current_ws.canonicalize() {
+        if s_norm.eq_ignore_ascii_case(c2.to_string_lossy().trim_end_matches('/')) {
+            return true;
+        }
+    }
+    if let Ok(c1) = p_session.canonicalize() {
+        if c1.to_string_lossy().trim_end_matches('/').eq_ignore_ascii_case(c_norm) {
+            return true;
+        }
+    }
+
+    if s_clean.starts_with('~') {
+        if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from) {
+            let rel = s_clean.trim_start_matches('~').trim_start_matches('/');
+            let expanded = home.join(rel);
+            let exp_str = expanded.to_string_lossy();
+            if exp_str.trim_end_matches('/').eq_ignore_ascii_case(c_norm) {
+                return true;
+            }
+            if let (Ok(c1), Ok(c2)) = (expanded.canonicalize(), current_ws.canonicalize()) {
+                if c1 == c2 {
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
+}
+
 
