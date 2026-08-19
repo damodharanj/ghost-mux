@@ -99,15 +99,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-${{ runner.arch }}-cargo-
 
-      - name: Cargo check
-        run: |
-          cargo check --verbose
-          cargo check --manifest-path ghost-mux-server/Cargo.toml --target-dir target --verbose
-
-      - name: Cargo test
-        run: |
-          cargo test --manifest-path ghost-mux-server/Cargo.toml --target-dir target --verbose -- --test-threads=1
-
       - name: Build production bundle
         run: |
           if [ "${{ matrix.os }}" = "macos-latest" ]; then
@@ -117,6 +108,10 @@ jobs:
             chmod +x tools/linux/build-production.sh
             ./tools/linux/build-production.sh
           fi
+
+      - name: Cargo test
+        run: |
+          cargo test --manifest-path ghost-mux-server/Cargo.toml --target-dir target --verbose -- --test-threads=1
 
       - name: Package bundle (Linux)
         if: matrix.os == 'ubuntu-latest'
