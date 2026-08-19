@@ -51,6 +51,7 @@ fn main() {
 
     let zig = resolve_zig_executable();
     let mut build = Command::new(&zig);
+    let local_cache = ghostty_dir.join(".zig-cache");
     build
         .env_remove("MACOSX_DEPLOYMENT_TARGET")
         .env_remove("SDKROOT")
@@ -59,6 +60,10 @@ fn main() {
         .arg("-Demit-lib-vt")
         .arg("--prefix")
         .arg(&install_prefix)
+        .arg("--cache-dir")
+        .arg(&local_cache)
+        .arg("--global-cache-dir")
+        .arg(&local_cache)
         .current_dir(&ghostty_dir);
 
     // Only pass -Dtarget when cross-compiling. For native builds, let zig
@@ -95,30 +100,24 @@ fn main() {
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
     println!("cargo:rustc-link-lib=static=ghostty-vt");
 
-    // The zig build produces dependency archives (highway, simdutf, utfcpp) in
-    // .zig-cache/o/<hash>/ with hash-based paths. Walk the cache and emit a
-    // link-search directive for each directory that contains one of them.
+    // The zig build produces dependency archives (highway, simdutf, utfcpp).
+    // Search both local and global Zig caches and emit link-search directives.
     let dep_libs = if is_msvc {
         vec!["highway.lib", "simdutf.lib", "utfcpp.lib"]
     } else {
         vec!["libhighway.a", "libsimdutf.a", "libutfcpp.a"]
     };
-    let zig_cache = ghostty_dir.join(".zig-cache").join("o");
-    if zig_cache.is_dir() {
-        for entry in std::fs::read_dir(&zig_cache).expect("read zig-cache/o") {
-            let entry = entry.expect("read dir entry");
-            let dir = entry.path();
-            for lib in &dep_libs {
-                if dir.join(lib).exists() {
-                    let lib_name = if is_msvc {
-                        lib.trim_end_matches(".lib")
-                    } else {
-                        lib.trim_start_matches("lib").trim_end_matches(".a")
-                    };
-                    println!("cargo:rustc-link-search=native={}", dir.display());
-                    println!("cargo:rustc-link-lib=static={lib_name}");
-                }
-            }
+
+    let mut search_roots = vec![local_cache];
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        search_roots.push(home.join(".cache").join("zig"));
+        search_roots.push(home.join("Library").join("Caches").join("org.ziglang.zig"));
+    }
+
+    let mut found_libs = std::collections::HashSet::new();
+    for root in search_roots {
+        if root.is_dir() {
+            find_and_link_dep_libs(&root, &dep_libs, is_msvc, &mut found_libs, 0);
         }
     }
 
@@ -228,4 +227,38 @@ fn zig_target(target: &str) -> String {
         other => panic!("unsupported Rust target for vendored build: {other}"),
     };
     value.to_owned()
+}
+
+fn find_and_link_dep_libs(
+    dir: &Path,
+    dep_libs: &[&str],
+    is_msvc: bool,
+    found: &mut std::collections::HashSet<String>,
+    depth: usize,
+) {
+    if depth > 5 {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            for lib in dep_libs {
+                if path.join(lib).exists() {
+                    let lib_name = if is_msvc {
+                        lib.trim_end_matches(".lib")
+                    } else {
+                        lib.trim_start_matches("lib").trim_end_matches(".a")
+                    };
+                    if found.insert(lib_name.to_string()) {
+                        println!("cargo:rustc-link-search=native={}", path.display());
+                        println!("cargo:rustc-link-lib=static={lib_name}");
+                    }
+                }
+            }
+            find_and_link_dep_libs(&path, dep_libs, is_msvc, found, depth + 1);
+        }
+    }
 }
