@@ -54,8 +54,6 @@ fn main() {
     let local_cache = ghostty_dir.join(".zig-cache");
     build
         .env_remove("MACOSX_DEPLOYMENT_TARGET")
-        .env_remove("SDKROOT")
-        .env_remove("DEVELOPER_DIR")
         .arg("build")
         .arg("-Demit-lib-vt")
         .arg("--prefix")
@@ -65,6 +63,23 @@ fn main() {
         .arg("--global-cache-dir")
         .arg(&local_cache)
         .current_dir(&ghostty_dir);
+
+    // On macOS, ensure SDKROOT is set so Zig can link against libSystem.
+    if target.contains("darwin") {
+        if let Ok(sdk) = env::var("SDKROOT") {
+            build.env("SDKROOT", sdk);
+        } else if let Ok(output) = Command::new("xcrun").args(["--show-sdk-path"]).output() {
+            if output.status.success() {
+                let sdk = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !sdk.is_empty() {
+                    build.env("SDKROOT", sdk);
+                }
+            }
+        }
+        if let Ok(dev_dir) = env::var("DEVELOPER_DIR") {
+            build.env("DEVELOPER_DIR", dev_dir);
+        }
+    }
 
     // Only pass -Dtarget when cross-compiling. For native builds, let zig
     // auto-detect the host (matches how ghostty's own CMakeLists.txt works).
