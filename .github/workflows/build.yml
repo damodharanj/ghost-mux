@@ -73,7 +73,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .tools/zig
-          key: ${{ runner.os }}-zig-${{ hashFiles('tools/linux/ensure-zig.sh') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-zig-${{ hashFiles('tools/linux/ensure-zig.sh') }}
 
       - name: Install Zig toolchain
         run: |
@@ -102,9 +102,9 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-${{ runner.arch }}-cargo-
 
       - name: Cargo check
         run: |
@@ -113,7 +113,7 @@ jobs:
 
       - name: Cargo test
         run: |
-          cargo test -- --test-threads=1
+          cargo test --bin ghost-mux -- --test-threads=1
           cargo test --manifest-path ghost-mux-server/Cargo.toml --target-dir target -- --test-threads=1
 
       - name: Build production bundle

@@ -18,10 +18,12 @@ zig_bin_path() {
   printf '%s/zig%s\n' "$TOOLCHAIN_DIR" "$exe"
 }
 
-if [[ -x "$(zig_bin_path)" ]]; then
+if [[ -x "$(zig_bin_path)" ]] && "$(zig_bin_path)" version >/dev/null 2>&1; then
   printf '%s\n' "$(zig_bin_path)"
   exit 0
 fi
+
+rm -rf "$TOOLCHAIN_DIR"
 
 OS="$(uname -s)"
 ARCH="$(uname -m)"
