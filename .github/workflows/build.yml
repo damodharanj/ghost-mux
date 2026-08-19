@@ -101,13 +101,12 @@ jobs:
 
       - name: Cargo check
         run: |
-          cargo check
-          cargo check --manifest-path ghost-mux-server/Cargo.toml --target-dir target
+          cargo check --verbose
+          cargo check --manifest-path ghost-mux-server/Cargo.toml --target-dir target --verbose
 
       - name: Cargo test
         run: |
-          cargo test --bin ghost-mux -- --test-threads=1
-          cargo test --manifest-path ghost-mux-server/Cargo.toml --target-dir target -- --test-threads=1
+          cargo test --manifest-path ghost-mux-server/Cargo.toml --target-dir target --verbose -- --test-threads=1
 
       - name: Build production bundle
         run: |

@@ -199,10 +199,17 @@ fn fetch_ghostty(out_dir: &Path) -> PathBuf {
 }
 
 fn run(mut command: Command, context: &str) {
-    let status = command
-        .status()
+    let output = command
+        .output()
         .unwrap_or_else(|error| panic!("failed to execute {context}: {error}"));
-    assert!(status.success(), "{context} failed with status {status}");
+    if !output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        panic!(
+            "{context} failed with {}.\n--- STDOUT ---\n{stdout}\n--- STDERR ---\n{stderr}",
+            output.status
+        );
+    }
 }
 
 fn resolve_zig_executable() -> PathBuf {
