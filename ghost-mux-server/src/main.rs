@@ -1278,7 +1278,15 @@ mod tests {
             port, body.len(), body
         );
 
-        let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port)).unwrap();
+        let mut stream = None;
+        for _ in 0..50 {
+            if let Ok(s) = TcpStream::connect(format!("127.0.0.1:{}", port)) {
+                stream = Some(s);
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        let mut stream = stream.expect("Failed to connect to test server");
         stream.write_all(request.as_bytes()).unwrap();
         stream.flush().unwrap();
 

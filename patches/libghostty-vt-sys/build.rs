@@ -53,8 +53,8 @@ fn main() {
     let mut build = Command::new(&zig);
     build
         .env_remove("MACOSX_DEPLOYMENT_TARGET")
-        // Do NOT remove SDKROOT and DEVELOPER_DIR on macOS. They are required
-        // on headless CI runners so Zig can correctly link against libSystem.dylib.
+        .env_remove("SDKROOT")
+        .env_remove("DEVELOPER_DIR")
         .arg("build")
         .arg("-Demit-lib-vt")
         .arg("--prefix")
