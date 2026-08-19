@@ -29,9 +29,21 @@ jobs:
           - os: macos-latest
             artifact_name: ghost-mux-macos-arm64.zip
 
+    env:
+      RUST_BACKTRACE: "1"
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Configure Git Safe Directory
+        run: |
+          git config --global --add safe.directory "*"
+
+      - name: Setup patches
+        run: |
+          chmod +x tools/setup-patches.sh
+          ./tools/setup-patches.sh
 
       - name: Install Linux system dependencies
         if: matrix.os == 'ubuntu-latest'
@@ -67,6 +79,7 @@ jobs:
         run: |
           chmod +x tools/linux/ensure-zig.sh
           ./tools/linux/ensure-zig.sh
+          chmod -R +x .tools/zig || true
           echo "$(pwd)/.tools/zig/toolchain" >> $GITHUB_PATH
           echo "ZIG=$(pwd)/.tools/zig/toolchain/zig" >> $GITHUB_ENV
 
@@ -92,11 +105,6 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
-
-      - name: Setup patches
-        run: |
-          chmod +x tools/setup-patches.sh
-          ./tools/setup-patches.sh
 
       - name: Cargo check
         run: |
