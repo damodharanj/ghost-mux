@@ -111,21 +111,21 @@ if command -v codesign &>/dev/null; then
     
     # Sign libraries first
     if [ -d "$MACOS_DIR/lib" ]; then
-        find "$MACOS_DIR/lib" -type f \( -name "*.dylib" -o -name "*.so" \) -exec codesign --force --sign - {} \;
+        find "$MACOS_DIR/lib" -type f \( -name "*.dylib" -o -name "*.so" \) -exec codesign --force --sign - {} \; 2>/dev/null || true
     fi
     
     # Sign nested helper binaries
     if [ -f "$MACOS_DIR/ghost-mux-server" ]; then
-        codesign --force --sign - "$MACOS_DIR/ghost-mux-server"
+        codesign --force --sign - "$MACOS_DIR/ghost-mux-server" 2>/dev/null || true
     fi
     
     # Sign the main binary
     if [ -f "$MACOS_DIR/ghost-mux" ]; then
-        codesign --force --sign - "$MACOS_DIR/ghost-mux"
+        codesign --force --sign - "$MACOS_DIR/ghost-mux" 2>/dev/null || true
     fi
     
     # Sign the overall bundle
-    codesign --force --sign - "$APP_BUNDLE"
+    codesign --force --sign - "$APP_BUNDLE" 2>/dev/null || true
     echo "==> Code signing complete."
 else
     echo "warning: codesign tool not found, skipping ad-hoc code signing."
