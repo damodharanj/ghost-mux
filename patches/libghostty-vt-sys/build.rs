@@ -142,16 +142,10 @@ fn main() {
         println!("cargo:rustc-link-lib=framework=CoreFoundation");
         println!("cargo:rustc-link-lib=c++");
     } else if target.contains("linux") {
-        let static_stdcxx = env::var("STATIC_LIBSTDCXX").map(|v| v == "1").unwrap_or(false);
-        if static_stdcxx {
-            println!("cargo:rustc-link-lib=stdc++");
-            println!("cargo:rustc-link-arg=-static-libstdc++");
-            println!("cargo:rustc-link-arg=-static-libgcc");
-        } else if env::var("USE_LIBCXX").map(|v| v == "1").unwrap_or(false) {
-            println!("cargo:rustc-link-lib=c++");
-        } else {
-            println!("cargo:rustc-link-lib=stdc++");
-        }
+        println!("cargo:rustc-link-lib=stdc++");
+        println!("cargo:rustc-link-lib=m");
+        println!("cargo:rustc-link-lib=pthread");
+        println!("cargo:rustc-link-lib=dl");
     }
     println!("cargo:include={}", include_dir.display());
 }
@@ -258,7 +252,7 @@ fn find_and_link_dep_libs(
     found: &mut std::collections::HashSet<String>,
     depth: usize,
 ) {
-    if depth > 5 {
+    if depth > 15 {
         return;
     }
     let Ok(entries) = std::fs::read_dir(dir) else {

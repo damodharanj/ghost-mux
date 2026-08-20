@@ -4,7 +4,7 @@ set -euo pipefail
 # Configuration for C++ runtime library (libstdc++) dependency:
 # - STATIC_LIBSTDCXX=1 (default): Statically link libstdc++ and libgcc to remove the dynamic dependency.
 # - BUNDLE_LIBSTDCXX=1 (default 0): Copy libstdc++.so and libgcc_s.so into the app bundle's lib directory.
-STATIC_LIBSTDCXX="${STATIC_LIBSTDCXX:-1}"
+STATIC_LIBSTDCXX="${STATIC_LIBSTDCXX:-0}"
 BUNDLE_LIBSTDCXX="${BUNDLE_LIBSTDCXX:-0}"
 export STATIC_LIBSTDCXX
 export BUNDLE_LIBSTDCXX
