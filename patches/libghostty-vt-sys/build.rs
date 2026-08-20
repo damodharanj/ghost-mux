@@ -63,6 +63,13 @@ fn main() {
         .arg("--global-cache-dir")
         .arg(&local_cache)
         .current_dir(&ghostty_dir);
+    let opt_level = env::var("OPT_LEVEL").unwrap_or_else(|_| "0".to_string());
+    let zig_optimize = match opt_level.as_str() {
+        "0" => "Debug",
+        "s" | "z" => "ReleaseSmall",
+        _ => "ReleaseFast",
+    };
+    build.arg(format!("-Doptimize={zig_optimize}"));
 
     // On macOS, ensure SDKROOT is set so Zig can link against libSystem.
     if target.contains("darwin") {
@@ -132,7 +139,7 @@ fn main() {
     let mut found_libs = std::collections::HashSet::new();
     for root in search_roots {
         if root.is_dir() {
-            find_and_link_dep_libs(&root, &dep_libs, is_msvc, &mut found_libs, 0);
+            find_and_link_dep_libs(&root, &dep_libs, is_msvc, &mut found_libs, &lib_dir, 0);
         }
     }
 
@@ -250,6 +257,7 @@ fn find_and_link_dep_libs(
     dep_libs: &[&str],
     is_msvc: bool,
     found: &mut std::collections::HashSet<String>,
+    dest_dir: &Path,
     depth: usize,
 ) {
     if depth > 15 {
@@ -262,19 +270,22 @@ fn find_and_link_dep_libs(
         let path = entry.path();
         if path.is_dir() {
             for lib in dep_libs {
-                if path.join(lib).exists() {
+                let src_file = path.join(lib);
+                if src_file.is_file() {
                     let lib_name = if is_msvc {
                         lib.trim_end_matches(".lib")
                     } else {
                         lib.trim_start_matches("lib").trim_end_matches(".a")
                     };
                     if found.insert(lib_name.to_string()) {
+                        let dest_file = dest_dir.join(lib);
+                        let _ = std::fs::copy(&src_file, &dest_file);
                         println!("cargo:rustc-link-search=native={}", path.display());
                         println!("cargo:rustc-link-lib=static={lib_name}");
                     }
                 }
             }
-            find_and_link_dep_libs(&path, dep_libs, is_msvc, found, depth + 1);
+            find_and_link_dep_libs(&path, dep_libs, is_msvc, found, dest_dir, depth + 1);
         }
     }
 }
