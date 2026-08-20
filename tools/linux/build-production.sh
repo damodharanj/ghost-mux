@@ -34,11 +34,7 @@ CYGWIN* | MINGW* | MSYS*)
   ;;
 esac
 
-if grep -Eq '^libghostty-vt-sys[[:space:]]*=.*vendored' "$PROJECT_ROOT/Cargo.toml"; then
-  if [[ ! -x "$SCRIPT_DIR/ensure-zig.sh" ]]; then
-    echo "error: missing helper script at $SCRIPT_DIR/ensure-zig.sh" >&2
-    exit 1
-  fi
+if [[ -x "$SCRIPT_DIR/ensure-zig.sh" ]]; then
   ZIG_BIN="$("$SCRIPT_DIR/ensure-zig.sh")"
   export ZIG="$ZIG_BIN"
   export PATH="$(dirname "$ZIG_BIN"):$PATH"
