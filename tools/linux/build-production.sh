@@ -169,8 +169,8 @@ bundle_macos_deps() {
       elif [[ -f "$dep" ]]; then
         resolved="$dep"
       else
-        echo "error: unable to resolve dependency '$dep' (owner: $owner)" >&2
-        exit 1
+        echo "warning: unable to resolve dependency '$dep' (owner: $owner); skipping" >&2
+        continue
       fi
 
       local base
