@@ -21,12 +21,20 @@ mkdir -p "$MACOS_DIR"
 mkdir -p "$RESOURCES_DIR"
 
 # 3. Copy files from dist/ghost-mux/
-cp "$PROJECT_ROOT/dist/ghost-mux/ghost-mux" "$MACOS_DIR/ghost-mux"
-chmod +x "$MACOS_DIR/ghost-mux"
-cp "$PROJECT_ROOT/dist/ghost-mux/ghost-mux-server" "$MACOS_DIR/ghost-mux-server"
-chmod +x "$MACOS_DIR/ghost-mux-server"
-cp -R "$PROJECT_ROOT/dist/ghost-mux/lib" "$MACOS_DIR/lib"
-cp "$PROJECT_ROOT/dist/ghost-mux/settings.yaml" "$RESOURCES_DIR/settings.yaml"
+if [ -f "$PROJECT_ROOT/dist/ghost-mux/ghost-mux" ]; then
+    cp "$PROJECT_ROOT/dist/ghost-mux/ghost-mux" "$MACOS_DIR/ghost-mux"
+    chmod +x "$MACOS_DIR/ghost-mux"
+fi
+if [ -f "$PROJECT_ROOT/dist/ghost-mux/ghost-mux-server" ]; then
+    cp "$PROJECT_ROOT/dist/ghost-mux/ghost-mux-server" "$MACOS_DIR/ghost-mux-server"
+    chmod +x "$MACOS_DIR/ghost-mux-server"
+fi
+if [ -d "$PROJECT_ROOT/dist/ghost-mux/lib" ]; then
+    cp -R "$PROJECT_ROOT/dist/ghost-mux/lib" "$MACOS_DIR/lib"
+fi
+if [ -f "$PROJECT_ROOT/dist/ghost-mux/settings.yaml" ]; then
+    cp "$PROJECT_ROOT/dist/ghost-mux/settings.yaml" "$RESOURCES_DIR/settings.yaml"
+fi
 if [ -d "$PROJECT_ROOT/dist/ghost-mux/assets" ]; then
     cp -R "$PROJECT_ROOT/dist/ghost-mux/assets" "$RESOURCES_DIR/assets"
 fi
