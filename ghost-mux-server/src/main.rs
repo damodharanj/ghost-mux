@@ -1460,21 +1460,12 @@ mod tests {
         let git_res = post_rpc(port, "git.status", serde_json::json!({
             "cwd": cwd.to_string_lossy().to_string()
         }));
-        if let Some(status) = git_res.get("status").and_then(|s| s.as_str()) {
-            if status == "success" {
-                if let Some(result) = git_res.get("result") {
-                    let branch = result.get("branch").and_then(|b| b.as_str()).unwrap_or("");
-                    assert!(!branch.is_empty());
-                }
-            }
-        }
+        assert_eq!(git_res.get("status").and_then(|s| s.as_str()), Some("success"));
     }
 
     #[test]
     fn test_workspace_operations() {
         let port = spawn_test_server();
-        // Remove spaces file if exists to start fresh
-        let _ = fs::remove_file("workspaces.yaml");
 
         // 1. Get initial workspaces list
         let list_res = post_rpc(port, "workspaces.list", serde_json::json!({}));
@@ -1517,6 +1508,5 @@ mod tests {
         assert!(!workspaces_3.iter().any(|w| w.get("path").unwrap().as_str().unwrap() == ws_path_str));
 
         let _ = fs::remove_dir_all(&temp_workspace_path);
-        let _ = fs::remove_file("workspaces.yaml");
     }
 }
