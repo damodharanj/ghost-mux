@@ -101,6 +101,7 @@ jobs:
 
       - name: Build production bundle
         run: |
+          set -x
           if [ "${{ matrix.os }}" = "macos-latest" ]; then
             chmod +x tools/macos/build-production.sh
             ./tools/macos/build-production.sh
