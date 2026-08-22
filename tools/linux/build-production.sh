@@ -179,7 +179,7 @@ bundle_macos_deps() {
       if [[ ! -f "$bundled" ]]; then
         cp "$resolved" "$bundled"
         chmod 644 "$bundled"
-        install_name_tool -id "@rpath/$base" "$bundled"
+        install_name_tool -id "@rpath/$base" "$bundled" 2>/dev/null || true
       fi
 
       local replacement
@@ -188,7 +188,7 @@ bundle_macos_deps() {
       else
         replacement="@loader_path/$base"
       fi
-      install_name_tool -change "$dep" "$replacement" "$owner"
+      install_name_tool -change "$dep" "$replacement" "$owner" 2>/dev/null || true
 
       if [[ "$seen" != *"|$bundled|"* ]]; then
         seen="${seen}$bundled|"
