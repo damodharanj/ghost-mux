@@ -73,15 +73,20 @@ fn main() {
 
     // On macOS, ensure SDKROOT is set so Zig can link against libSystem.
     if target.contains("darwin") {
+        let mut macos_sdk: Option<String> = None;
         if let Ok(sdk) = env::var("SDKROOT") {
-            build.env("SDKROOT", sdk);
+            macos_sdk = Some(sdk);
         } else if let Ok(output) = Command::new("xcrun").args(["--show-sdk-path"]).output() {
             if output.status.success() {
                 let sdk = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 if !sdk.is_empty() {
-                    build.env("SDKROOT", sdk);
+                    macos_sdk = Some(sdk);
                 }
             }
+        }
+        if let Some(ref sdk) = macos_sdk {
+            build.env("SDKROOT", sdk);
+            build.arg("--sysroot").arg(sdk);
         }
         if let Ok(dev_dir) = env::var("DEVELOPER_DIR") {
             build.env("DEVELOPER_DIR", dev_dir);
@@ -95,7 +100,8 @@ fn main() {
         build.arg(format!("-Dtarget={zig_target}"));
     }
 
-    run(build, &format!("zig build (using {})", zig.display()));
+    let zig_context = format!("zig build (using {})", zig.display());
+    run_with_retry(&mut build, &zig_context, 3);
 
     let lib_dir = install_prefix.join("lib");
     let include_dir = install_prefix.join("include");
@@ -149,6 +155,10 @@ fn main() {
         println!("cargo:rustc-link-lib=framework=CoreFoundation");
         println!("cargo:rustc-link-lib=c++");
     } else if target.contains("linux") {
+        // Zig compiles C++ sources using LLVM libc++ (std::__1), so link c++ and c++abi
+        // along with standard system libraries.
+        println!("cargo:rustc-link-lib=c++");
+        println!("cargo:rustc-link-lib=c++abi");
         println!("cargo:rustc-link-lib=stdc++");
         println!("cargo:rustc-link-lib=m");
         println!("cargo:rustc-link-lib=pthread");
@@ -172,8 +182,7 @@ fn fetch_ghostty(out_dir: &Path) -> PathBuf {
 
     // Clean and clone fresh.
     if src_dir.exists() {
-        std::fs::remove_dir_all(&src_dir)
-            .unwrap_or_else(|e| panic!("failed to remove {}: {e}", src_dir.display()));
+        let _ = std::fs::remove_dir_all(&src_dir);
     }
 
     eprintln!("Fetching ghostty {GHOSTTY_COMMIT} ...");
@@ -185,32 +194,55 @@ fn fetch_ghostty(out_dir: &Path) -> PathBuf {
         .arg("--no-checkout")
         .arg(GHOSTTY_REPO)
         .arg(&src_dir);
-    run(clone, "git clone ghostty");
+    run_with_retry(&mut clone, "git clone ghostty", 3);
 
     let mut checkout = Command::new("git");
     checkout
         .arg("checkout")
         .arg(GHOSTTY_COMMIT)
         .current_dir(&src_dir);
-    run(checkout, "git checkout ghostty commit");
+    run_with_retry(&mut checkout, "git checkout ghostty commit", 3);
 
     std::fs::write(&stamp, GHOSTTY_COMMIT).unwrap_or_else(|e| panic!("failed to write stamp: {e}"));
 
     src_dir
 }
 
-fn run(mut command: Command, context: &str) {
-    let output = command
-        .output()
-        .unwrap_or_else(|error| panic!("failed to execute {context}: {error}"));
-    if !output.status.success() {
+fn run_with_retry(command: &mut Command, context: &str, retries: usize) {
+    let mut last_err = String::new();
+    for attempt in 1..=retries {
+        let output = match command.output() {
+            Ok(out) => out,
+            Err(e) => {
+                last_err = format!("failed to spawn {context}: {e}");
+                if attempt < retries {
+                    eprintln!("Retrying {context} (attempt {attempt}/{retries}) after spawn error: {e}");
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                    continue;
+                }
+                panic!("failed to execute {context}: {e}");
+            }
+        };
+
+        if output.status.success() {
+            return;
+        }
+
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
-        panic!(
+        last_err = format!(
             "{context} failed with {}.\n--- STDOUT ---\n{stdout}\n--- STDERR ---\n{stderr}",
             output.status
         );
+
+        if attempt < retries {
+            eprintln!(
+                "Retrying {context} (attempt {attempt}/{retries}) after failure:\n{stderr}"
+            );
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
     }
+    panic!("{last_err}");
 }
 
 fn resolve_zig_executable() -> PathBuf {
