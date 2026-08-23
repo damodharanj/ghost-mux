@@ -53,7 +53,6 @@ fn main() {
     let mut build = Command::new(&zig);
     let local_cache = ghostty_dir.join(".zig-cache");
     build
-        .env_remove("MACOSX_DEPLOYMENT_TARGET")
         .arg("build")
         .arg("-Demit-lib-vt")
         .arg("--prefix")
@@ -71,26 +70,39 @@ fn main() {
     };
     build.arg(format!("-Doptimize={zig_optimize}"));
 
-    // On macOS, ensure SDKROOT is set so Zig can link against libSystem.
+    // On macOS, ensure SDKROOT, DEVELOPER_DIR, and MACOSX_DEPLOYMENT_TARGET are set so Zig can link against libSystem.
     if target.contains("darwin") {
-        let mut macos_sdk: Option<String> = None;
-        if let Ok(sdk) = env::var("SDKROOT") {
-            macos_sdk = Some(sdk);
-        } else if let Ok(output) = Command::new("xcrun").args(["--show-sdk-path"]).output() {
-            if output.status.success() {
-                let sdk = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !sdk.is_empty() {
-                    macos_sdk = Some(sdk);
-                }
-            }
+        let sdk = env::var("SDKROOT").ok().filter(|s| !s.is_empty()).or_else(|| {
+            Command::new("xcrun")
+                .args(["--sdk", "macosx", "--show-sdk-path"])
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        });
+        if let Some(sdk_path) = sdk {
+            build.env("SDKROOT", &sdk_path);
         }
-        if let Some(ref sdk) = macos_sdk {
-            build.env("SDKROOT", sdk);
-            build.arg("--sysroot").arg(sdk);
+
+        let dev_dir = env::var("DEVELOPER_DIR").ok().filter(|s| !s.is_empty()).or_else(|| {
+            Command::new("xcode-select")
+                .arg("-p")
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        });
+        if let Some(dev_path) = dev_dir {
+            build.env("DEVELOPER_DIR", &dev_path);
         }
-        if let Ok(dev_dir) = env::var("DEVELOPER_DIR") {
-            build.env("DEVELOPER_DIR", dev_dir);
-        }
+
+        let deploy_target = env::var("MACOSX_DEPLOYMENT_TARGET")
+            .unwrap_or_else(|_| "11.0".to_string());
+        build.env("MACOSX_DEPLOYMENT_TARGET", deploy_target);
     }
 
     // Only pass -Dtarget when cross-compiling. For native builds, let zig

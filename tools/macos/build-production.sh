@@ -4,6 +4,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
+# Ensure macOS SDK and Xcode toolchain paths are exported for Zig and rustc
+if [ -z "${SDKROOT:-}" ] && command -v xcrun >/dev/null 2>&1; then
+    export SDKROOT="$(xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)"
+fi
+if [ -z "${DEVELOPER_DIR:-}" ] && command -v xcode-select >/dev/null 2>&1; then
+    export DEVELOPER_DIR="$(xcode-select -p 2>/dev/null || true)"
+fi
+export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-11.0}"
+
 # 1. Run the base build script to generate the binaries and bundle the libraries
 echo "==> Running base build and dependency bundling..."
 "$SCRIPT_DIR/../linux/build-production.sh" "$@"

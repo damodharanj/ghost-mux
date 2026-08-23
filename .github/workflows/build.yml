@@ -103,6 +103,9 @@ jobs:
         run: |
           set -x
           if [ "${{ matrix.os }}" = "macos-latest" ]; then
+            export SDKROOT="$(xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)"
+            export DEVELOPER_DIR="$(xcode-select -p 2>/dev/null || true)"
+            export MACOSX_DEPLOYMENT_TARGET="11.0"
             chmod +x tools/macos/build-production.sh
             ./tools/macos/build-production.sh
           else
