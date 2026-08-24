@@ -73,7 +73,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .tools/zig
-          key: ${{ runner.os }}-${{ runner.arch }}-zig-${{ hashFiles('tools/linux/ensure-zig.sh') }}
+          key: v2-${{ runner.os }}-${{ runner.arch }}-zig-${{ hashFiles('tools/linux/ensure-zig.sh') }}
 
       - name: Install Zig toolchain
         run: |

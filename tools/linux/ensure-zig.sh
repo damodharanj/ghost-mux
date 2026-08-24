@@ -18,15 +18,24 @@ zig_bin_path() {
   printf '%s/zig%s\n' "$TOOLCHAIN_DIR" "$exe"
 }
 
-if [[ -x "$(zig_bin_path)" ]] && "$(zig_bin_path)" version >/dev/null 2>&1; then
+OS="$(uname -s)"
+ARCH="$(uname -m)"
+
+is_toolchain_valid() {
+  [[ -x "$(zig_bin_path)" ]] || return 1
+  [[ -d "$TOOLCHAIN_DIR/lib" ]] || return 1
+  if [[ "$OS" == "Darwin" ]]; then
+    [[ -f "$TOOLCHAIN_DIR/lib/libc/darwin/libSystem.tbd" ]] || return 1
+  fi
+  "$(zig_bin_path)" version >/dev/null 2>&1 || return 1
+}
+
+if is_toolchain_valid; then
   printf '%s\n' "$(zig_bin_path)"
   exit 0
 fi
 
 rm -rf "$TOOLCHAIN_DIR"
-
-OS="$(uname -s)"
-ARCH="$(uname -m)"
 
 case "$OS" in
 Darwin)
