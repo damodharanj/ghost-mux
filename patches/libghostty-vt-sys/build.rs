@@ -23,7 +23,7 @@ fn main() {
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR must be set"));
     let target = env::var("TARGET").expect("TARGET must be set");
-    let host = env::var("HOST").expect("HOST must be set");
+    let _host = env::var("HOST").expect("HOST must be set");
 
     // Locate ghostty source: env override > fetch into OUT_DIR.
     let ghostty_dir = match env::var("GHOSTTY_SOURCE_DIR") {
@@ -105,12 +105,9 @@ fn main() {
         build.env("MACOSX_DEPLOYMENT_TARGET", deploy_target);
     }
 
-    // Only pass -Dtarget when cross-compiling. For native builds, let zig
-    // auto-detect the host (matches how ghostty's own CMakeLists.txt works).
-    if target != host {
-        let zig_target = zig_target(&target);
-        build.arg(format!("-Dtarget={zig_target}"));
-    }
+    // Always pass -Dtarget so Zig explicitly links against the correct target ABI and SDK.
+    let zig_target = zig_target(&target);
+    build.arg(format!("-Dtarget={zig_target}"));
 
     let zig_context = format!("zig build (using {})", zig.display());
     run_with_retry(&mut build, &zig_context, 3);
