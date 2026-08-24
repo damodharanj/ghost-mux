@@ -70,36 +70,11 @@ fn main() {
     };
     build.arg(format!("-Doptimize={zig_optimize}"));
 
-    // On macOS, ensure SDKROOT, DEVELOPER_DIR, and MACOSX_DEPLOYMENT_TARGET are set so Zig can link against libSystem.
+    // On macOS, unset SDKROOT and DEVELOPER_DIR to prevent Zig from picking up Xcode SDK stubs
+    // which conflict with Zig's hermetic Darwin toolchain and bundled libSystem definitions.
     if target.contains("darwin") {
-        let sdk = env::var("SDKROOT").ok().filter(|s| !s.is_empty()).or_else(|| {
-            Command::new("xcrun")
-                .args(["--sdk", "macosx", "--show-sdk-path"])
-                .output()
-                .ok()
-                .filter(|o| o.status.success())
-                .and_then(|o| String::from_utf8(o.stdout).ok())
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-        });
-        if let Some(sdk_path) = sdk {
-            build.env("SDKROOT", &sdk_path);
-        }
-
-        let dev_dir = env::var("DEVELOPER_DIR").ok().filter(|s| !s.is_empty()).or_else(|| {
-            Command::new("xcode-select")
-                .arg("-p")
-                .output()
-                .ok()
-                .filter(|o| o.status.success())
-                .and_then(|o| String::from_utf8(o.stdout).ok())
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-        });
-        if let Some(dev_path) = dev_dir {
-            build.env("DEVELOPER_DIR", &dev_path);
-        }
-
+        build.env_remove("SDKROOT");
+        build.env_remove("DEVELOPER_DIR");
         let deploy_target = env::var("MACOSX_DEPLOYMENT_TARGET")
             .unwrap_or_else(|_| "11.0".to_string());
         build.env("MACOSX_DEPLOYMENT_TARGET", deploy_target);
@@ -284,8 +259,8 @@ fn zig_target(target: &str) -> String {
         "x86_64-unknown-linux-musl" => "x86_64-linux-musl",
         "aarch64-unknown-linux-gnu" => "aarch64-linux-gnu",
         "aarch64-unknown-linux-musl" => "aarch64-linux-musl",
-        "aarch64-apple-darwin" => "aarch64-macos-none",
-        "x86_64-apple-darwin" => "x86_64-macos-none",
+        "aarch64-apple-darwin" => "aarch64-macos",
+        "x86_64-apple-darwin" => "x86_64-macos",
         "x86_64-pc-windows-msvc" => "x86_64-windows-msvc",
         "aarch64-pc-windows-msvc" => "aarch64-windows-msvc",
         other => panic!("unsupported Rust target for vendored build: {other}"),
